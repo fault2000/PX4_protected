@@ -117,6 +117,10 @@
  * otherwise it will trigger a poison error.  */
 #if defined(__PX4_NUTTX)
 #include <stdlib.h>
+#if defined(CONFIG_BUILD_PROTECTED)
+/* The syscall enumeration also declares the environment API names. */
+#include <sys/syscall.h>
+#endif
 #ifdef __cplusplus
 #include <cstdlib>
 #endif

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Minimal startup for the FMUv6X protected bring-up target.
+# The board entrypoint initializes kernel and user PX4 services before NSH.
+echo "FMUv6X protected bring-up"
+ver all
+work_queue status

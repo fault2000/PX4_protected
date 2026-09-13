@@ -45,6 +45,15 @@ add_dependencies(px4 git_nuttx)
 get_property(module_libraries GLOBAL PROPERTY PX4_MODULE_LIBRARIES)
 
 if (NOT CONFIG_BUILD_FLAT)
+	# Include transitive static-library dependencies in the rescan group.
+	# CMake appends those after the explicit target_link_libraries() entries.
+	foreach(link_language C CXX)
+		string(REPLACE "<LINK_LIBRARIES>"
+			"-Wl,--start-group <LINK_LIBRARIES> -Wl,--end-group"
+			CMAKE_${link_language}_LINK_EXECUTABLE
+			"${CMAKE_${link_language}_LINK_EXECUTABLE}")
+	endforeach()
+
 	add_executable(px4_kernel ${PX4_SOURCE_DIR}/platforms/common/empty.c)
 	set(KERNEL_NAME ${PX4_BOARD_VENDOR}_${PX4_BOARD_MODEL}_${PX4_BOARD_LABEL}_kernel.elf)
 	set_target_properties(px4_kernel PROPERTIES OUTPUT_NAME ${KERNEL_NAME})
@@ -172,10 +181,8 @@ if (NOT CONFIG_BUILD_FLAT)
 		-Wl,--warn-common
 		-Wl,--gc-sections
 
-		-Wl,--start-group
 			${nuttx_libs}
 			${kernel_module_libraries}
-		-Wl,--end-group
 
 		m
 		gcc
@@ -218,9 +225,7 @@ if (NOT CONFIG_BUILD_FLAT)
 		-Wl,--warn-common
 		-Wl,--gc-sections
 
-		-Wl,--start-group
-		${nuttx_userspace}
-		-Wl,--end-group
+			${nuttx_userspace}
 
 		m
 		gcc

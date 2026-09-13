@@ -184,7 +184,9 @@ hrt_call_every(struct hrt_call *entry, hrt_abstime delay, hrt_abstime interval, 
 void
 hrt_cancel(struct hrt_call *entry)
 {
-	boardctl(HRT_CANCEL, (uintptr_t)entry);
+	hrt_boardctl_t ioc_parm {};
+	ioc_parm.entry = entry;
+	boardctl(HRT_CANCEL, (uintptr_t)&ioc_parm);
 }
 
 void

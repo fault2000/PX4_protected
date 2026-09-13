@@ -54,6 +54,7 @@ target_link_libraries(px4_kernel_layer
 		nuttx_kc
 		nuttx_karch
 		nuttx_kmm
+		px4_platform
 	PRIVATE
 		kernel_events_interface # events_ioctl_init
 )

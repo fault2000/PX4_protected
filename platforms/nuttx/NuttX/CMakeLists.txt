@@ -128,6 +128,7 @@ if (NOT CONFIG_BUILD_FLAT)
 		COMMAND ${CMAKE_COMMAND} -E remove -f kernel_builtin_list.h kernel_builtin_proto.h
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_BINARY_DIR}/px4_kernel.bdat kernel_builtin_list.h
 		COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_BINARY_DIR}/px4_kernel.pdat kernel_builtin_proto.h
+		DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/px4_kernel.bdat ${CMAKE_CURRENT_BINARY_DIR}/px4_kernel.pdat
 	)
 
 	add_custom_target(px4_kernel_builtin_list_target DEPENDS ${KERNEL_BUILTIN_DIR}/kernel_builtin_list.h ${KERNEL_BUILTIN_DIR}/kernel_builtin_proto.h)
@@ -153,6 +154,7 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/apps/libapps.a
 	COMMAND make --no-print-directory --silent TOPDIR="${NUTTX_DIR}" > ${CMAKE_CURRENT_BINARY_DIR}/nuttx_apps.log
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different ${APPS_DIR}/libapps.a ${CMAKE_CURRENT_BINARY_DIR}/apps/libapps.a
 	DEPENDS ${nuttx_apps_files} nuttx_context ${NUTTX_DIR}/include/nuttx/config.h
+		${CMAKE_CURRENT_BINARY_DIR}/px4.bdat ${CMAKE_CURRENT_BINARY_DIR}/px4.pdat
 	WORKING_DIRECTORY ${APPS_DIR}
 	#USES_TERMINAL
 )

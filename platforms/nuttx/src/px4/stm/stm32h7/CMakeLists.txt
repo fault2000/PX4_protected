@@ -32,6 +32,10 @@
 ############################################################################
 
 
+if(CONFIG_BUILD_PROTECTED)
+	add_compile_definitions(__KERNEL__)
+endif()
+
 add_subdirectory(adc)
 add_subdirectory(../stm32_common/board_critmon board_critmon)
 add_subdirectory(../stm32_common/board_hw_info board_hw_info)

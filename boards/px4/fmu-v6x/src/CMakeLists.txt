@@ -49,14 +49,24 @@ if("${PX4_BOARD_LABEL}" STREQUAL  "bootloader")
 	target_include_directories(drivers_board PRIVATE ${PX4_SOURCE_DIR}/platforms/nuttx/src/bootloader/common)
 
 else()
+	if(CONFIG_BUILD_PROTECTED)
+		add_library(board_bus_info
+			i2c.cpp
+			spi.cpp
+		)
+		add_dependencies(board_bus_info nuttx_context)
+		set(board_bus_sources)
+	else()
+		set(board_bus_sources i2c.cpp spi.cpp)
+	endif()
+
 	add_library(drivers_board
 		can.c
-		i2c.cpp
+		${board_bus_sources}
 		init.cpp
 		led.c
 		mtd.cpp
 		sdio.c
-		spi.cpp
 		timer_config.cpp
 		usb.c
 	)
@@ -68,8 +78,14 @@ else()
 			arch_spi
 			arch_board_hw_info
 			drivers__led # drv_led_start
-			nuttx_arch # sdio
 			nuttx_drivers # sdio
-			px4_layer
 	)
+	if(CONFIG_BUILD_PROTECTED)
+		target_compile_definitions(drivers_board PRIVATE __KERNEL__)
+		target_link_libraries(drivers_board PRIVATE px4_kernel_layer nuttx_karch)
+		add_library(drivers_userspace stm32_userspace.c)
+		add_dependencies(drivers_userspace nuttx_context)
+	else()
+		target_link_libraries(drivers_board PRIVATE px4_layer nuttx_arch)
+	endif()
 endif()
