@@ -86,8 +86,41 @@ Telnet and PX4 USB protocol autodetection are disabled. The `reboot` command
 runs in the kernel because FMUv6X reset lockout controls GPIO. The broad PX4
 `tests` command is not included.
 
-The initial interactive NSH console and startup output use USART3 at 57600
-baud. USB NSH is introduced in the following commit.
+## USB NSH console
+
+The protected target enables NuttX's native USB NSH frontend with
+`CONFIG_NSH_USBCONSOLE=y` and `CONFIG_NSH_USBCONDEV="/dev/ttyACM0"`.
+NSH connects the CDC/ACM device through `boardctl`, executes the startup script,
+then waits for a USB terminal. It does not need MAVLink, QGroundControl,
+`SYS_USB_AUTO`, or a separate `sercon`/`nshterm` invocation.
+
+After flashing this target, close QGroundControl and open the board's USB
+serial port with a terminal application. On Linux, for example:
+
+```sh
+screen /dev/ttyACM0 115200
+```
+
+Use the actual device name assigned by the host. Press Enter three times to
+start the session; this NuttX version waits for three consecutive CR or LF
+characters before displaying `nsh>`. The USB frontend retries sessions after
+disconnects, but enumeration and reconnect behavior still require hardware
+validation.
+
+Useful initial checks at the prompt are:
+
+```sh
+ver all
+free
+ps
+work_queue status
+dmesg
+```
+
+USART3 remains `/dev/console` at 57600 baud for early boot and startup-script
+output. The initial interactive NSH session uses USB; this configuration does
+not also start an interactive UART shell. USB NSH cannot show failures that
+occur before USB initialization, and it does not replay the UART startup log.
 
 Firmware generation alone does not establish working board startup, heap
 isolation, cross-boundary callbacks, or real-time performance. These require
@@ -99,16 +132,26 @@ The `make` command above completed successfully with `CCACHE_DISABLE=1` in
 the local environment. Static artifact
 checks passed for ARM ELF load ranges, RAM bounds, reset vectors, userspace
 header, flash padding, builtin tables, kernel placement of `reboot`, and the
-`.px4` decompressed payload matching the combined binary. USB NSH support is introduced in the following commit.
+`.px4` decompressed payload matching the combined binary. The user ELF includes
+the native USB NSH frontend, and CDC/ACM initialization is linked in the kernel.
 
 | Artifact measurement | Bytes |
 | --- | ---: |
-| Kernel flash image | 272,064 |
-| User flash image | 96,512 |
-| Combined binary, including flash gap | 1,014,016 |
-| PX4 package | 364,259 |
+| Kernel flash image | 272,096 |
+| User flash image | 96,704 |
+| Combined binary, including flash gap | 1,014,208 |
+| PX4 package | 364,499 |
 
 These measurements describe the pre-publication working-tree build. Git
 version metadata can change image sizes after committing the sources.
 
-Hardware boot and runtime behavior have not yet been tested on a board.
+To repeat the artifact checks, use the versioned verification script. It
+requires Python 3 and `arm-none-eabi-nm` from the ARM toolchain, and writes
+`protected-artifact-check.json` into the selected build directory:
+
+```sh
+python3 boards/px4/fmu-v6x/tools/verify_protected.py build/px4_fmu-v6x_protected
+```
+
+USB enumeration, interactive commands and reconnect behavior have not yet
+been tested on a board.
