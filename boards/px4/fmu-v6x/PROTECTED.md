@@ -3,7 +3,7 @@
 `px4_fmu-v6x_protected` is a minimal STM32H753II firmware target using NuttX
 protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
-another. Initial hardware startup and USB NSH access have been confirmed;
+another. Initial hardware startup and USB NSH access/reconnection have been confirmed;
 runtime stability and MPU isolation validation remain in progress.
 
 The source baseline is:
@@ -29,7 +29,7 @@ follow-up commits separate protected-mode bring-up from USB NSH support. Inspect
 those changes with `git diff v1.17.0..main`.
 
 Research milestones use separate project tags: `v0.1` records the initial
-hardware bring-up, `v0.1.1`, `v0.1.2`, etc. identify follow-up patches, and
+hardware bring-up and USB NSH reconnection, `v0.1.1`, `v0.1.2`, etc. identify follow-up patches, and
 `v0.2` marks completion and validation of the next work package. See
 [PROTECTED_ROADMAP.md](PROTECTED_ROADMAP.md) for the scope and versioning rules.
 The PX4 numeric firmware version remains based on `v1.17.0`; version generation
@@ -122,7 +122,8 @@ Use the actual device name assigned by the host. Press Enter three times to
 start the session; this NuttX version waits for three consecutive CR or LF
 characters before displaying `nsh>`. The USB frontend retries sessions after
 disconnects. Initial enumeration and shell entry have been confirmed on
-Windows; reconnect behavior still requires hardware validation.
+Windows. The user also confirmed successful USB reconnection and NSH use;
+the report did not record a repetition count.
 
 Useful initial checks at the prompt are:
 
@@ -191,6 +192,12 @@ host-specific. This confirms initial startup and USB shell entry for that
 image. The initial command results below extend this evidence; repeated
 startup and sustained runtime stability remain unverified.
 
+On 2026-09-15, the user confirmed that USB reconnection had also been tested
+successfully. This corrects the earlier reconnect-pending status in the
+baseline record and roadmap. The report does not specify a repetition count,
+so it does not establish completion of the proposed ten-reconnect check or
+the separate cold-start and sustained-runtime checks.
+
 `Work Queue: 0 threads` reports an active userspace PX4 work-queue manager
 with no worker queues created yet. The minimal configuration has not started
 the flight modules that would request those queues. This count does not
@@ -227,7 +234,7 @@ its terminal error result as one extra 32-byte page, explaining the displayed
 2,097,184-byte total. Treat this as a reporting issue and use Kmem/Umem for
 RAM observations; it does not indicate heap corruption.
 
-Repeated cold starts, USB reconnects, heap trends, user work execution,
+Repeated cold starts, heap trends, user work execution,
 HRT callbacks/cancellation, uORB notifications, and MPU isolation enforcement
 remain to be verified. The static artifact checker does not infer hardware
 validation from source revision; its generated hardware flags remain false
@@ -264,6 +271,6 @@ requires Python 3 and `arm-none-eabi-nm` from the ARM toolchain, and writes
 python3 boards/px4/fmu-v6x/tools/verify_protected.py build/px4_fmu-v6x_protected
 ```
 
-Initial USB enumeration, shell entry and the listed diagnostic commands have
-been confirmed as described above. Reconnect behavior and sustained runtime
-validation remain pending.
+Initial USB enumeration, shell entry, the listed diagnostic commands, and USB
+reconnection have been confirmed as described above. Quantitative repetition
+records and sustained runtime validation remain pending.
