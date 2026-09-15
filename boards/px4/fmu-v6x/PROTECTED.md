@@ -4,7 +4,7 @@
 protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
 another. Initial hardware startup and USB NSH access/reconnection have been confirmed;
-the basic protected HRT diagnostic has also passed twice on hardware.
+the basic protected HRT and user work queue diagnostics have also passed on hardware.
 Sustained runtime stability and MPU isolation validation remain in progress.
 
 The source baseline is:
@@ -239,9 +239,9 @@ its terminal error result as one extra 32-byte page, explaining the displayed
 2,097,184-byte total. Treat this as a reporting issue and use Kmem/Umem for
 RAM observations; it does not indicate heap corruption.
 
-Repeated cold starts, sustained heap trends, user work execution, uORB
-notifications, and MPU isolation enforcement remain to be verified. Basic
-HRT callback/cancellation results are recorded below. The static artifact checker does not infer hardware
+Repeated cold starts, sustained heap trends, uORB notifications, and MPU
+isolation enforcement remain to be verified. Basic HRT callback/cancellation
+and user work execution results are recorded below. The static artifact checker does not infer hardware
 validation from source revision; its generated hardware flags remain false
 for locally built images.
 
@@ -280,8 +280,8 @@ python3 boards/px4/fmu-v6x/tools/verify_protected.py build/px4_fmu-v6x_protected
 ```
 
 Initial USB enumeration, shell entry, the listed diagnostic commands, and USB
-reconnection have been confirmed as described above. Quantitative repetition
-records and sustained runtime validation remain pending.
+reconnection have been confirmed as described above. USB reconnection and
+cold-start repetition counts and sustained runtime validation remain pending.
 
 ## Protected HRT delivery and diagnostic command (v0.1.1)
 
@@ -421,8 +421,9 @@ Hardware FIFO ordering across multiple timers, pending-event replacement,
 callback self-cancel/rearm, coalescing under backlog, and behavior under
 sustained load remain separate checks. The following patch adds a user
 `ScheduledWorkItem` diagnostic for actual worker execution, stop/restart and
-lifetime cleanup after HRT delivery. Its hardware validation and the remaining
-uORB work are still required before `v0.2`.
+lifetime cleanup after HRT delivery. The following hardware record covers its
+basic operation; sustained validation and the remaining uORB work are still
+required before `v0.2`.
 
 ## User work queue diagnostic (v0.1.2, no patch tag)
 
@@ -503,6 +504,88 @@ hardware, and no full flat or other-board firmware build is claimed.
 | Kernel static data | 60,192 |
 | User static reservation | 16,384 |
 
-Version metadata can change image sizes after committing. Hardware results
-for this patch are pending. The previous `v0.1.1` HRT results
-apply to their recorded image and do not validate this new queue path.
+Version metadata can change image sizes after committing. The previous
+`v0.1.1` HRT results apply to their recorded image; the following record
+provides separate hardware evidence for `v0.1.2`.
+
+## User work queue hardware validation (2026-09-15)
+
+The user reported four successful `work_queue_smoke run` invocations in two
+captures without rebooting. The image identified PX4 commit
+`963c07808e4d6abab26ac5aae3a2fd1e459475ec`, NuttX
+`5ef31ffdf1a29202aca2c76c9727d663b49c0c51`, GCC 13.2.1, build time
+`Sep 15 2026 17:01:09`, FMUM `0x003` and BASE `0x005`.
+
+| Observation | Run 1 | Run 2 | Run 3 | Run 4 |
+| --- | ---: | ---: | ---: | ---: |
+| Command PID | 12 | 14 | 27 | 29 |
+| Worker PID | 13 | 15 | 28 | 30 |
+| Immediate elapsed (us) | 17 | 17 | 17 | 17 |
+| 100 ms delayed elapsed (us) | 100,030 | 100,030 | 100,030 | 100,030 |
+| Periodic min / max (us) | 99,999 / 100,000 | 99,999 / 100,000 | 100,000 / 100,000 | 99,999 / 100,000 |
+| Restarted periodic min / max (us) | 99,999 / 100,000 | 100,000 / 100,000 | 100,000 / 100,000 | 100,000 / 100,000 |
+| Data runs, each periodic phase | 5 | 5 | 5 | 5 |
+| Control runs at cleanup | 6 | 6 | 6 | 6 |
+
+Every run passed immediate/delayed execution, cancellation before expiry,
+periodic stop/restart, and cleanup. Data runs reported `CONTROL=0x7`, `IPSR=0`
+and a worker PID different from the command PID, confirming unprivileged user
+worker execution. Cancellation's printed `CONTROL=0` is the reset data record;
+the check intentionally produces no data run. Control runs remain separate.
+The diagnostic also checked that neither data nor control counters increased
+during the post-stop observation windows. The 17 us and 100,030 us values
+include API and dispatch work and are not isolated interrupt latency measures;
+the short periodic samples do not bound worst-case jitter under load.
+
+All four runs reported `PASS cleanup ... exited` and `PASS all checks`.
+Subsequent `work_queue status` showed zero user workers, and `ps` contained no
+`wq:usr_smoke` task. The user queue manager remained PID 8, with stack use
+612/1,232 B (49.6%); `usr_hrt` remained PID 7, using 420/960 B (43.7%). The
+finished workers' own stack high-water marks were not captured.
+
+After the first two queue runs, `hrt_smoke run` also passed all checks in the
+same image. HRT callbacks ran as PID 7 with `CONTROL=0x7`; delivered increased
+22 -> 30, pending ended at zero, and coalesced stayed zero. The initial 22 is
+consistent with 11 timer deliveries per queue run (one delayed plus ten
+periodic); the immediate/control runs do not use HRT scheduling.
+
+### Heap observations and interpretation
+
+| Snapshot | Kernel used (B) | User used (B) | Kernel nused | User nused |
+| --- | ---: | ---: | ---: | ---: |
+| Initial `free`, after `ver all` | 36,560 | 18,064 | 165 | 57 |
+| After queue runs 1 and 2 | 36,848 | 20,128 | 168 | 58 |
+| Follow-up after HRT run and `sleep 2` | 36,848 | 18,064 | 168 | 57 |
+| After queue run 3 and `sleep 2` | 36,848 | 20,128 | 168 | 58 |
+| After queue run 4 and `sleep 2` | 36,848 | 20,128 | 168 | 58 |
+
+The kernel plateaued at +288 B / three allocations. User usage returned to
+the earlier 18,064 B observation after the HRT command, and repeated queue
+runs reproduced 20,128 B rather than accumulating another 2,064 B each time.
+The repeated post-queue snapshots also matched in free/largest values:
+kernel 208,560/207,728 B, user 110,592/108,896 B. No progressive heap growth was
+observed over these four invocations.
+
+The pinned NuttX source provides a consistent explanation, although no
+allocation-address tracing was performed to prove ownership.
+[`mm_free()`](../../../platforms/nuttx/NuttX/nuttx/mm/mm_heap/mm_free.c) can
+put task-exit frees on `mm_delaylist`; a later kernel-side
+[`mm_malloc()`](../../../platforms/nuttx/NuttX/nuttx/mm/mm_heap/mm_malloc.c)
+for the same heap drains the list. The protected user allocator and a sleep
+alone do not drain it.
+`ver`, `hrt_smoke`, the queue command and its worker each request a 2,048-byte
+stack; with the allocator header and alignment, one such allocation accounts
+for 2,064 B. A single-command observation versus command-plus-worker can
+therefore differ by one pending stack allocation. Worker PID disappearance
+confirms its execution has ended, not that every deferred block is already
+reflected as free in heap statistics.
+
+NuttX's [signal-action allocator](../../../platforms/nuttx/NuttX/nuttx/sched/signal/sig_action.c)
+allocates entries in blocks of four and returns used entries to a global reuse
+list. Three additional 96-byte blocks match the
+observed +288 B / three kernel allocations when the extra user worker is
+introduced. The stable retained kernel allocation and the reversible user
+delta support these explanations; they are not evidence of a per-run leak.
+Long-duration, concurrent-worker and allocation-ownership checks remain
+outside this short record. Basic `v0.1.2` work queue validation is complete;
+the next implementation target is the uORB notification/callback boundary.
