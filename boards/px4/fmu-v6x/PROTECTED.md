@@ -3,28 +3,30 @@
 `px4_fmu-v6x_protected` is a minimal STM32H753II firmware target using NuttX
 protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
-another. Hardware boot and MPU behavior have not yet been validated.
+another. Successful hardware startup and MPU behavior have not yet been
+validated; see the startup BusFault correction below.
 
 The source baseline is:
 
 | Repository | Required commit |
 | --- | --- |
 | PX4 v1.17 | `d6f12ad1c4f70ad3230afd7d86e971421e02fef4` plus the protected support changes |
-| NuttX | `3855de8c95ce31054def2a9cc0055d1b5d2e4156` (STM32H7 heap fix on `fb2fadf6f599c1406f052db013efd00a2518e72c`) |
+| NuttX | `5ef31ffdf1a29202aca2c76c9727d663b49c0c51` (STM32H7 heap and MPU fixes on `fb2fadf6f599c1406f052db013efd00a2518e72c`) |
 | NuttX apps | `e37940d8535f603a16b8f6f21c21edaf584218aa` |
 
 The heap fix in `platforms/nuttx/NuttX/nuttx/arch/arm/src/stm32h7/stm32_allocateheap.c`
 keeps the protected user heap within AXI SRAM, consistent with the kernel heap
-calculation. The NuttX submodule pins this fix in the `fault2000/nuttX`
-repository; recursive checkout retrieves it automatically.
+calculation. The NuttX submodule pins this fix and the STM32H7 MPU correction
+described below in the `fault2000/nuttX` repository; recursive checkout
+retrieves both fixes automatically.
 
 This repository starts with an exact source snapshot of PX4 v1.17.0 from
 [upstream commit `d6f12ad1c4`](https://github.com/PX4/PX4-Autopilot/commit/d6f12ad1c4f70ad3230afd7d86e971421e02fef4).
 The local `v1.17.0` tag identifies this imported snapshot. Its commit ID differs
 from upstream because this repository starts a new history at that release.
-Original licenses and copyright notices are retained. The following two
-commits separate protected-mode bring-up from USB NSH support. Inspect those
-changes with `git diff v1.17.0..main`.
+Original licenses and copyright notices are retained. The initial two
+follow-up commits separate protected-mode bring-up from USB NSH support. Inspect
+those changes with `git diff v1.17.0..main`.
 
 For a new checkout:
 
@@ -121,6 +123,32 @@ USART3 remains `/dev/console` at 57600 baud for early boot and startup-script
 output. The initial interactive NSH session uses USB; this configuration does
 not also start an interactive UART shell. USB NSH cannot show failures that
 occur before USB initialization, and it does not replay the UART startup log.
+
+## Startup BusFault correction (2026-09-15)
+
+The first hardware UART capture showed a precise BusFault during
+`px4_log_initialize()` while uORB registered `log_message`. Using the exact
+GCC 13.2.1 kernel ELF uploaded to the board, `PC=0x08031c32` resolves to
+`px4::atomic<unsigned long>::fetch_or()` and the instruction `ldrex r3, [r6]`.
+`CFSR=0x8200` indicates PRECISERR and BFARVALID; `R6=BFAR=0x24062224` is inside
+the configured user heap. These addresses identify that build only.
+
+The previous NuttX pin (`3855de8c95`) mapped protected user SRAM as shareable.
+The fix in `platforms/nuttx/NuttX/nuttx/arch/arm/src/stm32h7/stm32_mpuinit.c` maps
+both user static RAM and user heaps as Normal, cacheable, non-shareable memory
+so that LDREX/STREX use the CPU-local exclusive monitor. This backports
+[Apache NuttX commit `519c9a4b8b`](https://github.com/apache/nuttx/commit/519c9a4b8ba06d382a2ce3778a872480c142feff)
+to the older file structure. Memory ranges and access permissions are retained;
+the common ARM MPU helper and flat build are unchanged. This makes user SRAM
+effectively cacheable on Cortex-M7, so DMA buffers still need cache maintenance.
+
+The corrected target built with GCC 14.2.1 on 2026-09-15 and passed the static
+artifact checks below. The corrected firmware has not yet been tested on the
+board. Preserve the original ELF and UART log, then capture a fresh power-on log
+at 57600 baud and check that startup reaches USB NSH. After connecting to USB
+and pressing Enter three times, run `ver all`, `free`, `ps`, `work_queue status`
+and `dmesg`. Successful startup is the next acceptance gate; it does not complete
+the remaining protected-mode validation.
 
 Firmware generation alone does not establish working board startup, heap
 isolation, cross-boundary callbacks, or real-time performance. These require
