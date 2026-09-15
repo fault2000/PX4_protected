@@ -69,6 +69,7 @@ for flag in ['CONFIG_BUILD_PROTECTED=y', 'CONFIG_BUILD_2PASS=y', 'CONFIG_ARM_MPU
              'CONFIG_BOARDCTL_USBDEVCTRL=y', 'CONFIG_USART3_SERIAL_CONSOLE=y']:
     assert flag in config, flag
 assert 'CONFIG_BUILD_FLAT=y' not in config
+assert 'CONFIG_SMP=y' not in config, 'User HRT dispatch requires a single-core scheduler'
 assert 'CONFIG_CDCACM_CONSOLE=y' not in config
 assert (build / 'NuttX/kernel_builtin/kernel_builtin_list.h').read_bytes() == (build / 'NuttX/px4_kernel.bdat').read_bytes()
 assert (build / 'NuttX/kernel_builtin/kernel_builtin_proto.h').read_bytes() == (build / 'NuttX/px4_kernel.pdat').read_bytes()
@@ -77,6 +78,9 @@ assert 'stm32_configgpio' in ks and 'stm32_configgpio' not in us
 assert 'nsh_consolemain' in us and 'nsh_consolemain' not in ks
 assert 'cdcacm_initialize' in ks and 'cdcacm_initialize' not in us
 assert 'nsh_usbconsole.c' in (build / (name + '.map')).read_text()
+assert 'hrt_smoke_main' in us and 'hrt_smoke_main' not in ks, 'HRT diagnostic must run in userspace'
+assert 'hrt_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
+assert 'hrt_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
 
 # The kernel must use the protected allocator wrappers from libkmm. Linking
 # userspace libmm can make memalign use an uninitialized kernel g_mmheap copy.
@@ -87,7 +91,7 @@ assert 'g_mmheap' not in ks, 'Userspace heap pointer duplicated in kernel'
 assert us['_sbss'] <= us['g_mmheap'] < us['_ebss'], 'User heap pointer outside user BSS'
 
 report = {
-    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot placement, USB NSH configuration, kernel/user placement and allocator linkage',
+    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot and HRT diagnostic placement, USB NSH configuration, kernel/user placement and allocator linkage',
     'board_id': fw['board_id'],
     'kernel_flash_bytes': kflash_end - 0x08020000,
     'user_flash_bytes': max(s['paddr'] + s['filesz'] for s in uloads if s['filesz']) - 0x08100000,
@@ -98,6 +102,7 @@ report = {
     'binary_sha256': hashlib.sha256(binary).hexdigest(),
     'hardware_boot_verified': False,
     'usb_console_hardware_verified': False,
+    'hrt_smoke_hardware_verified': False,
 }
 print(json.dumps(report, indent=2))
 (build / 'protected-artifact-check.json').write_text(json.dumps(report, indent=2) + '\n')

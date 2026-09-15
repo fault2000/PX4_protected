@@ -1,0 +1,13 @@
+menuconfig SYSTEMCMDS_HRT_SMOKE
+	bool "hrt_smoke"
+	default n
+	depends on BOARD_PROTECTED && PLATFORM_NUTTX && BOARD_ARCHITECTURE = "cortex-m7"
+	---help---
+		Bounded HRT callback and cancellation checks for protected userspace.
+
+config USER_HRT_SMOKE
+	bool
+	default y
+	depends on BOARD_PROTECTED && SYSTEMCMDS_HRT_SMOKE
+	---help---
+		Run hrt_smoke in userspace memory.

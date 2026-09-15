@@ -47,24 +47,84 @@
 #  define MODULE_NAME "hrt_ioctl"
 #endif
 
-#define HRT_ENTRY_QUEUE_MAX_SIZE 3
 static px4_sem_t g_wait_sem;
-static struct hrt_call *next_hrt_entry[HRT_ENTRY_QUEUE_MAX_SIZE];
-static int hrt_entry_queued = 0;
-static bool suppress_entry_queue_error = false;
-static bool hrt_entry_queue_error = false;
+static struct hrt_call *g_pending_head;
+static struct hrt_call *g_pending_tail;
+static bool g_wake_pending;
+static hrt_usr_status_t g_status;
+
+/* All pending-list and doorbell operations run with interrupts excluded.
+ * The semaphore is a wakeup, not a count of queued callbacks. Cancellation may
+ * leave a wakeup behind; the receiver consumes it and checks the list again.
+ */
+static void hrt_signal_pending(void)
+{
+	if (g_pending_head && !g_wake_pending) {
+		g_wake_pending = true;
+		px4_sem_post(&g_wait_sem);
+	}
+}
+
+static void hrt_remove_pending(struct hrt_call *entry)
+{
+	struct hrt_call *previous = NULL;
+
+	for (struct hrt_call *pending = g_pending_head; pending; pending = pending->usr_next) {
+		if (pending == entry) {
+			if (previous) {
+				previous->usr_next = pending->usr_next;
+
+			} else {
+				g_pending_head = pending->usr_next;
+			}
+
+			if (g_pending_tail == pending) {
+				g_pending_tail = previous;
+			}
+
+			pending->usr_next = NULL;
+			--g_status.pending;
+			return;
+		}
+
+		previous = pending;
+	}
+}
 
 void hrt_usr_call(void *arg)
 {
-	// This is called from hrt interrupt
-	if (hrt_entry_queued < HRT_ENTRY_QUEUE_MAX_SIZE) {
-		next_hrt_entry[hrt_entry_queued++] = (struct hrt_call *)arg;
+	/* Called from the HRT interrupt. Retain one notification per timer without
+	 * allocating memory or imposing a fixed limit on distinct pending timers.
+	 */
+	struct hrt_call *entry = (struct hrt_call *)arg;
+	irqstate_t flags = px4_enter_critical_section();
 
-	} else {
-		hrt_entry_queue_error = true;
+	for (struct hrt_call *pending = g_pending_head; pending; pending = pending->usr_next) {
+		if (pending == entry) {
+			++g_status.coalesced;
+			px4_leave_critical_section(flags);
+			return;
+		}
 	}
 
-	px4_sem_post(&g_wait_sem);
+	entry->usr_next = NULL;
+
+	if (g_pending_tail) {
+		g_pending_tail->usr_next = entry;
+
+	} else {
+		g_pending_head = entry;
+	}
+
+	g_pending_tail = entry;
+	++g_status.pending;
+
+	if (g_status.pending > g_status.max_pending) {
+		g_status.max_pending = g_status.pending;
+	}
+
+	hrt_signal_pending();
+	px4_leave_critical_section(flags);
 }
 
 int hrt_ioctl(unsigned int cmd, unsigned long arg);
@@ -104,64 +164,113 @@ hrt_ioctl(unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case HRT_WAITEVENT: {
-			irqstate_t flags;
-			px4_sem_wait(&g_wait_sem);
-			/* Atomically update the pointer to user side hrt entry */
-			flags = px4_enter_critical_section();
-
-			/* This should be always true, but check it anyway */
-			if (hrt_entry_queued > 0) {
-				*(struct hrt_call **)arg = next_hrt_entry[--hrt_entry_queued];
-				next_hrt_entry[hrt_entry_queued] = NULL;
-
-			} else {
-				hrt_entry_queue_error = true;
+			if (!arg) {
+				return -EINVAL;
 			}
 
-			px4_leave_critical_section(flags);
+			struct hrt_call **result = (struct hrt_call **)arg;
 
-			/* Warn once for entry queue being full */
-			if (hrt_entry_queue_error && !suppress_entry_queue_error) {
-				PX4_ERR("HRT entry error, queue size now %d", hrt_entry_queued);
-				suppress_entry_queue_error = true;
+			*result = NULL;
+
+			while (true) {
+				if (px4_sem_wait(&g_wait_sem) != 0) {
+					return -errno;
+				}
+
+				irqstate_t flags = px4_enter_critical_section();
+				g_wake_pending = false;
+				struct hrt_call *entry = g_pending_head;
+
+				if (entry) {
+					hrt_remove_pending(entry);
+					*result = entry;
+					++g_status.delivered;
+				}
+
+				hrt_signal_pending();
+				px4_leave_critical_section(flags);
+
+				if (entry) {
+					return OK;
+				}
+
+				/* A cancelled notification can leave an empty wakeup. */
 			}
 		}
-		break;
 
 	case HRT_ABSOLUTE_TIME:
+		if (!arg) {
+			return -EINVAL;
+		}
+
 		*(hrt_abstime *)arg = hrt_absolute_time();
 		break;
 
 	case HRT_CALL_AFTER:
-		hrt_call_after(h->entry, h->time, (hrt_callout)hrt_usr_call, h->entry);
-		break;
-
 	case HRT_CALL_AT:
-		hrt_call_at(h->entry, h->time, (hrt_callout)hrt_usr_call, h->entry);
-		break;
+	case HRT_CALL_EVERY: {
+			if (!h || !h->entry) {
+				return -EINVAL;
+			}
 
-	case HRT_CALL_EVERY:
-		hrt_call_every(h->entry, h->time, h->interval, (hrt_callout)hrt_usr_call, h->entry);
-		break;
-
-	case HRT_CANCEL:
-		if (h && h->entry) {
+			/* Rearming replaces both the kernel timer and a pending user event
+			 * atomically. NULL callouts remain valid deadline-only timers.
+			 */
+			irqstate_t flags = px4_enter_critical_section();
 			hrt_cancel(h->entry);
+			hrt_remove_pending(h->entry);
+			hrt_callout callout = h->callout ? hrt_usr_call : NULL;
 
-		} else {
-			PX4_ERR("HRT_CANCEL called with NULL entry");
+			if (cmd == HRT_CALL_AFTER) {
+				hrt_call_after(h->entry, h->time, callout, h->entry);
+
+			} else if (cmd == HRT_CALL_AT) {
+				hrt_call_at(h->entry, h->time, callout, h->entry);
+
+			} else {
+				hrt_call_every(h->entry, h->time, h->interval, callout, h->entry);
+			}
+
+			px4_leave_critical_section(flags);
 		}
+		break;
 
+	case HRT_CANCEL: {
+			if (!h || !h->entry) {
+				return -EINVAL;
+			}
+
+			irqstate_t flags = px4_enter_critical_section();
+			hrt_cancel(h->entry);
+			hrt_remove_pending(h->entry);
+			px4_leave_critical_section(flags);
+		}
 		break;
 
 	case HRT_GET_LATENCY: {
 			latency_boardctl_t *latency = (latency_boardctl_t *)arg;
+
+			if (!latency || latency->bucket_idx >= LATENCY_BUCKET_COUNT || latency->counter_idx > LATENCY_BUCKET_COUNT) {
+				return -EINVAL;
+			}
+
 			latency->latency = get_latency(latency->bucket_idx, latency->counter_idx);
 		}
 		break;
 
 	case HRT_RESET_LATENCY:
 		reset_latency_counters();
+		break;
+
+	case HRT_GET_USER_STATUS: {
+			if (!arg) {
+				return -EINVAL;
+			}
+
+			irqstate_t flags = px4_enter_critical_section();
+			*(hrt_usr_status_t *)arg = g_status;
+			px4_leave_critical_section(flags);
+		}
 		break;
 
 	default:

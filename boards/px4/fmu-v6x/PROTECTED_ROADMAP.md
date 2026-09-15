@@ -1,6 +1,6 @@
 # FMUv6X protected 이식 후속 계획
 
-갱신 기준: 2026-09-15, 연구 버전 `v0.1`.
+갱신 기준: 2026-09-15, 연구 패치 `v0.1.1` (구현·로컬 검증 완료, 신규 실기 검증 대기).
 실기 확인 기준: PX4 `03ca855b52`, NuttX `5ef31ffdf1`, NuttX apps `e37940d853`.
 현재 확인된 결과와 앞으로 수행할 작업을 구분한다. 단계별 통과 조건은 검증 계획이다.
 
@@ -47,6 +47,7 @@ NuttX protected의 보호 범위는 커널과 사용자 영역 사이이다. 사
 | 초기 진단 명령 | `help`, `free`, `ps`, `uorb status`, `listener log_message -n 1` 실행 확인 |
 | 힙·태스크 상태 | Kmem 여유 208,848 B, Umem 여유 110,624 B. 양쪽 워크큐 관리자와 `usr_hrt` 태스크 생존 확인 |
 | uORB 기본 데이터 경로 | 커널의 초기 `log_message`를 사용자 listener로 구독·복사·해제하는 경로 확인 |
+| HRT 전달·취소 패치와 사용자 진단 명령 | `v0.1.1`에서 구현. 호스트 동작 검사 8개와 펌웨어 빌드·정적 검사 통과. `hrt_smoke run` 실기 결과 대기 |
 | MPU 격리, 워크큐 실제 작업, HRT 콜백·취소, uORB 알림과 장시간 안정성 | 후속 실기 검증 필요 |
 | PX4 센서·출력 드라이버와 비행 모듈 | 현재 최소 타깃에서 비활성화 |
 
@@ -108,14 +109,18 @@ MAVLink나 logger의 추가 의존성이 드러나면 해당 의존 모듈만 �
    - 현재 `work_queue status`는 유저 명령이다. 이 출력만으로 커널 워크큐까지
      정상이라고 판단하지 않고 양쪽 상태를 별도로 관측한다.
 2. **HRT 이벤트 전달·취소**
-   - [hrt_ioctl.c](../../../platforms/nuttx/src/px4/common/hrt_ioctl.c)의 대기 저장소는
-     3개 항목을 역순으로 꺼내며, 저장소가 가득 차도 semaphore를 올린다.
-     cancel 경로에는 이 대기 목록을 정리하는 처리가 없다.
-   - [usr_hrt.cpp](../../../platforms/nuttx/src/px4/common/usr_hrt.cpp)의 dispatcher는
-     대기 사이에 이전 entry를 유지하며 boardctl 반환값을 검사하지 않는다.
-   - 전달 순서·초과 부하 정책·cancel 완료 의미·재예약·객체 수명을 먼저 정의한다.
-     정상 운용 부하에서 one-shot/periodic 전달 횟수, 취소 후 동작, 지연을 측정한다.
-     저장소 크기 확대만으로 완료 처리하지 않는다.
+   - `v0.1.1`의 [hrt_ioctl.c](../../../platforms/nuttx/src/px4/common/hrt_ioctl.c)는
+     FIFO와 타이머별 대기 1개 정책을 사용한다. 이미 대기 중인 주기 만료는 병합하고
+     횟수를 기록한다. 별도 고정 용량 제한이나 IRQ 내 메모리 할당은 없다.
+   - 취소·재예약은 kernel timer와 pending 알림을 같은 IRQ 임계 구역에서 정리한다.
+     단일 코어 [usr_hrt.cpp](../../../platforms/nuttx/src/px4/common/usr_hrt.cpp)는
+     scheduler lock으로 dequeue부터 짧은 비차단 콜백의 완료까지 수명을 보호한다.
+     오류 반환·NULL 콜백을 처리하고, 오류 로그는 바깥 lock 해제 후 출력한다.
+   - 실제 두 소스를 사용하는 호스트 동작 검사 8개가 통과했다. 사용자 영역에 배치한
+     `hrt_smoke run`으로 일회성·주기·취소·재사용·실행 권한을 보드에서 확인해야 한다.
+     능동/대기 상태 교체와 콜백 내부 취소·재예약의 호스트 결과를 실기 결과로 간주하지 않는다.
+   - 실기 주기·지연·취소와 반복 운용 검증이 남아 있다. 기존 사용자 `hrt_call_delay()`
+     wrapper 부재 등 전체 API 동등성도 후속 항목이며, 이번 패치로 HRT 전체 완료를 선언하지 않는다.
 3. **uORB 콜백 실행 영역**
    - [uORBManagerUsr.cpp](../../../platforms/common/uORB/uORBManagerUsr.cpp)는 유저 콜백 객체
      포인터를 전달하고, [uORBDeviceNode.cpp](../../../platforms/common/uORB/uORBDeviceNode.cpp)는
@@ -157,6 +162,8 @@ events, 파일 I/O 및 MPU 접근 차단 검증 등은 각각의 후속 작업�
 1. HRT 이벤트 전달·취소 계약을 정리하고 사용자 영역의 작은 NSH 진단 명령을 추가한다.
    one-shot은 정확히 한 번 실행되고, periodic은 주기·횟수를 기록하며, 취소·정리 완료
    후 추가 실행이 없어야 한다. 콜백의 ELF 배치와 실제 실행 영역을 확인한다.
+   `v0.1.1`에서 구현·호스트 검사·빌드·정적 배치를 확인했으며, 현재 다음 행동은
+   해당 펌웨어에서 `hrt_smoke run`을 실행하고 출력과 `free`·`ps`를 확보하는 것이다.
 2. 사용자 워크큐에서 실제 작업을 실행하여 주기, 중지, 재시작을 검증한다.
    반복 실행 후에도 콘솔 응답과 힙·스택 사용량이 안정적인지 기록한다.
 3. uORB의 K→U, U→K, U→U 및 K→K 경로에서 주기 발행·구독·poll 알림과 콜백을

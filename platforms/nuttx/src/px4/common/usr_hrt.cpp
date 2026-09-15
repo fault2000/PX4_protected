@@ -44,6 +44,7 @@
 #include <px4_platform_common/defines.h>
 #include <px4_platform_common/posix.h>
 #include <px4_platform_common/shutdown.h>
+#include <px4_platform_common/log.h>
 
 #include <sys/ioctl.h>
 #include <sys/types.h>
@@ -60,7 +61,28 @@
 #include <drivers/drv_hrt.h>
 #include <sys/boardctl.h>
 
+#ifndef MODULE_NAME
+#define MODULE_NAME "usr_hrt"
+#endif
+
+#if defined(CONFIG_SMP)
+#error "Protected userspace HRT dispatch requires a single-core scheduler"
+#endif
+
 static px4_task_t g_usr_hrt_task = -1;
+/* Accessed with scheduling locked. Defer logging because API calls can also
+ * originate inside a callback, where printing could violate its no-block rule.
+ */
+static unsigned int g_api_error_cmd;
+static int g_api_error_errno;
+static unsigned int g_api_errors;
+
+static void hrt_record_error(unsigned int cmd)
+{
+	g_api_error_cmd = cmd;
+	g_api_error_errno = errno;
+	++g_api_errors;
+}
 
 /**
  * Fetch a never-wrapping absolute time value in microseconds from
@@ -91,15 +113,37 @@ hrt_store_absolute_time(volatile hrt_abstime *t)
 int
 event_thread(int argc, char *argv[])
 {
-	struct hrt_call *entry = NULL;
-
 	while (1) {
-		/* Wait for hrt tick */
-		boardctl(HRT_WAITEVENT, (uintptr_t)&entry);
+		struct hrt_call *entry = nullptr;
 
-		/* HRT event received, dispatch */
-		if (entry) {
-			entry->usr_callout(entry->usr_arg);
+		/* The scheduler lock survives the blocking wait. On this single-core
+		 * target, another user task cannot cancel/free a dequeued entry before
+		 * its nonblocking callback finishes. Interrupts remain enabled.
+		 */
+		sched_lock();
+		const int ret = boardctl(HRT_WAITEVENT, (uintptr_t)&entry);
+		const int wait_errno = errno;
+
+		if (ret == 0 && entry && entry->usr_callout) {
+			hrt_callout callout = entry->usr_callout;
+			void *arg = entry->usr_arg;
+			callout(arg);
+			/* The callback may rearm, or cancel and release its own storage. */
+		}
+
+		const unsigned int api_errors = g_api_errors;
+		const unsigned int api_error_cmd = g_api_error_cmd;
+		const int api_error_errno = g_api_error_errno;
+		g_api_errors = 0;
+		sched_unlock();
+
+		if (api_errors) {
+			PX4_ERR("HRT API errors=%u last_cmd=%u errno=%d", api_errors, api_error_cmd, api_error_errno);
+		}
+
+		if (ret < 0 && wait_errno != EINTR) {
+			PX4_ERR("HRT event wait failed (%d)", wait_errno);
+			px4_usleep(100000);
 		}
 	}
 
@@ -111,7 +155,11 @@ event_thread(int argc, char *argv[])
  */
 bool hrt_request_stop()
 {
-	px4_task_delete(g_usr_hrt_task);
+	if (g_usr_hrt_task >= 0) {
+		px4_task_delete(g_usr_hrt_task);
+		g_usr_hrt_task = -1;
+	}
+
 	return true;
 }
 
@@ -121,8 +169,47 @@ bool hrt_request_stop()
 void
 hrt_init(void)
 {
-	px4_register_shutdown_hook(hrt_request_stop);
+	if (g_usr_hrt_task >= 0) {
+		return;
+	}
+
 	g_usr_hrt_task = px4_task_spawn_cmd("usr_hrt", SCHED_DEFAULT, SCHED_PRIORITY_MAX, 1000, event_thread, NULL);
+
+	if (g_usr_hrt_task < 0) {
+		PX4_ERR("HRT dispatcher start failed (%d)", errno);
+
+	} else {
+		px4_register_shutdown_hook(hrt_request_stop);
+	}
+}
+
+static void hrt_schedule(unsigned int cmd, struct hrt_call *entry, hrt_abstime time,
+			 hrt_abstime interval, hrt_callout callout, void *arg)
+{
+	if (!entry) {
+		return;
+	}
+
+	hrt_boardctl_t ioc_parm {};
+	ioc_parm.entry = entry;
+	ioc_parm.time = time;
+	ioc_parm.interval = interval;
+	ioc_parm.callout = callout;
+	ioc_parm.arg = arg;
+
+	/* Keep the callback fields and replacement timer visible as one change
+	 * to the dispatcher. The kernel removes any previous pending event.
+	 */
+	sched_lock();
+	entry->usr_callout = callout;
+	entry->usr_arg = arg;
+	const int ret = boardctl(cmd, (uintptr_t)&ioc_parm);
+
+	if (ret < 0) {
+		hrt_record_error(cmd);
+	}
+
+	sched_unlock();
 }
 
 /**
@@ -131,15 +218,7 @@ hrt_init(void)
 void
 hrt_call_after(struct hrt_call *entry, hrt_abstime delay, hrt_callout callout, void *arg)
 {
-	hrt_boardctl_t ioc_parm;
-	ioc_parm.entry = entry;
-	ioc_parm.time = delay;
-	ioc_parm.callout = callout;
-	ioc_parm.arg = arg;
-	entry->usr_callout = callout;
-	entry->usr_arg = arg;
-
-	boardctl(HRT_CALL_AFTER, (uintptr_t)&ioc_parm);
+	hrt_schedule(HRT_CALL_AFTER, entry, delay, 0, callout, arg);
 }
 
 /**
@@ -148,16 +227,7 @@ hrt_call_after(struct hrt_call *entry, hrt_abstime delay, hrt_callout callout, v
 void
 hrt_call_at(struct hrt_call *entry, hrt_abstime calltime, hrt_callout callout, void *arg)
 {
-	hrt_boardctl_t ioc_parm;
-	ioc_parm.entry = entry;
-	ioc_parm.time = calltime;
-	ioc_parm.interval = 0;
-	ioc_parm.callout = callout;
-	ioc_parm.arg = arg;
-	entry->usr_callout = callout;
-	entry->usr_arg = arg;
-
-	boardctl(HRT_CALL_AT, (uintptr_t)&ioc_parm);
+	hrt_schedule(HRT_CALL_AT, entry, calltime, 0, callout, arg);
 }
 
 /**
@@ -166,16 +236,7 @@ hrt_call_at(struct hrt_call *entry, hrt_abstime calltime, hrt_callout callout, v
 void
 hrt_call_every(struct hrt_call *entry, hrt_abstime delay, hrt_abstime interval, hrt_callout callout, void *arg)
 {
-	hrt_boardctl_t ioc_parm;
-	ioc_parm.entry = entry;
-	ioc_parm.time = delay;
-	ioc_parm.interval = interval;
-	ioc_parm.callout = callout;
-	ioc_parm.arg = arg;
-	entry->usr_callout = callout;
-	entry->usr_arg = arg;
-
-	boardctl(HRT_CALL_EVERY, (uintptr_t)&ioc_parm);
+	hrt_schedule(HRT_CALL_EVERY, entry, delay, interval, callout, arg);
 }
 
 /**
@@ -184,9 +245,20 @@ hrt_call_every(struct hrt_call *entry, hrt_abstime delay, hrt_abstime interval, 
 void
 hrt_cancel(struct hrt_call *entry)
 {
+	if (!entry) {
+		return;
+	}
+
 	hrt_boardctl_t ioc_parm {};
 	ioc_parm.entry = entry;
-	boardctl(HRT_CANCEL, (uintptr_t)&ioc_parm);
+	sched_lock();
+	const int ret = boardctl(HRT_CANCEL, (uintptr_t)&ioc_parm);
+
+	if (ret < 0) {
+		hrt_record_error(HRT_CANCEL);
+	}
+
+	sched_unlock();
 }
 
 void
@@ -219,5 +291,5 @@ get_latency(uint16_t bucket_idx, uint16_t counter_idx)
 
 void reset_latency_counters()
 {
-	boardctl(HRT_RESET_LATENCY, NULL);
+	boardctl(HRT_RESET_LATENCY, 0);
 }

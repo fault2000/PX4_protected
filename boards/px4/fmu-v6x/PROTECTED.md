@@ -96,7 +96,7 @@ through `px4_entry`, then NSH runs `init/rc.protected` as
 `/etc/init.d/rc.additional_init`. The script prints a banner and runs `ver all`
 and `work_queue status`; it does not run the normal flight startup script.
 
-Available diagnostics include `dmesg`, `hardfault_log`, `mft`, `mtd`, `param`,
+Available diagnostics include `dmesg`, `hardfault_log`, `hrt_smoke`, `mft`, `mtd`, `param`,
 `perf`, `reboot`, `top`, `listener`, `uorb`, `ver`, `work_queue`, and the protected
 kernel-command launcher. Flight modules, PX4 sensor/output drivers, Ethernet,
 Telnet and PX4 USB protocol autodetection are disabled. The `reboot` command
@@ -238,20 +238,23 @@ isolation, cross-boundary callbacks, or real-time performance. These require
 subsequent hardware validation before expanding this target into a flight
 configuration.
 
-Firmware generation was verified with GCC 14.2.1 and CMake 4.2.3 on 2026-09-14.
+## Build validation (v0.1.1)
+
+The HRT patch built with GCC 14.2.1 and CMake 4.2.3 on 2026-09-15.
 The `make` command above completed successfully with `CCACHE_DISABLE=1` in
 the local environment. Static artifact
 checks passed for ARM ELF load ranges, RAM bounds, reset vectors, userspace
-header, flash padding, builtin tables, kernel placement of `reboot`, and the
+header, flash padding, builtin tables, kernel placement of `reboot`, user
+placement of `hrt_smoke`, and the
 `.px4` decompressed payload matching the combined binary. The user ELF includes
 the native USB NSH frontend, and CDC/ACM initialization is linked in the kernel.
 
 | Artifact measurement | Bytes |
 | --- | ---: |
-| Kernel flash image | 272,096 |
-| User flash image | 96,704 |
-| Combined binary, including flash gap | 1,014,208 |
-| PX4 package | 364,499 |
+| Kernel flash image | 272,352 |
+| User flash image | 99,680 |
+| Combined binary, including flash gap | 1,017,184 |
+| PX4 package | 367,136 |
 
 These measurements describe the pre-publication working-tree build. Git
 version metadata can change image sizes after committing the sources.
@@ -267,3 +270,77 @@ python3 boards/px4/fmu-v6x/tools/verify_protected.py build/px4_fmu-v6x_protected
 Initial USB enumeration, shell entry and the listed diagnostic commands have
 been confirmed as described above. Reconnect behavior and sustained runtime
 validation remain pending.
+
+## Protected HRT delivery and diagnostic command (v0.1.1)
+
+The protected HRT bridge now retains pending timer notifications in FIFO
+order, with an intrusive link separate from the kernel timer queue. It does
+not allocate storage in the timer interrupt or impose the old three-entry
+limit. There is at most one pending notification per timer; repeated periodic
+expiries while it is pending are coalesced and counted. This preserves the
+original FIFO position rather than producing a burst of overdue callbacks.
+The wake semaphore is a binary notification. The receiver rechecks the queue
+after each wake, including a wake left behind by cancellation.
+
+Cancel and rearm remove the old kernel timer and any pending user notification
+in one interrupt critical section. The single-core user dispatcher locks
+scheduling before waiting for an event and keeps it locked through callback
+completion. NuttX allows other tasks to run while that wait blocks, but resumes
+the dispatcher with its scheduler lock intact. This prevents another task from
+freeing a dequeued entry before its callback finishes. Interrupts remain
+enabled. Helpers defer error logging until the dispatcher's outer unlock.
+
+Callbacks must remain short and nonblocking: no sleep, lock waits, allocation,
+or blocking I/O. Scheduling/cancellation and entry ownership are normal-task
+or owning-callback operations, not asynchronous signal-handler APIs. Self-cancel
+and self-rearm are supported; cancel before releasing entry/argument storage,
+and serialize concurrent ownership changes. The implementation explicitly
+rejects SMP builds. It does not claim arbitrary blocking callback support or
+complete parity for every HRT API; the existing missing protected user
+`hrt_call_delay()` wrapper remains a follow-up item.
+
+`hrt_called()` still reports the kernel timer deadline state. It does not prove
+that a deferred user callback has completed. NULL callbacks remain valid
+deadline-only timers and do not enqueue a user notification.
+
+The production bridge and dispatcher pass eight deterministic host lifecycle
+checks, including ordinary FIFO delivery, pending cancellation/replacement,
+NULL-callback expiry, periodic coalescing, and callback self-cancel/rearm:
+
+```sh
+python3 platforms/nuttx/src/px4/common/tests/run_hrt_host_tests.py
+```
+
+These checks model timer and OS entry points; they do not prove real NuttX
+context switching, ARM privilege, hardware timing, or MPU isolation. See the
+[host test notes](../../../platforms/nuttx/src/px4/common/tests/README.md).
+
+After building and uploading this patch, run the following in USB NSH:
+
+```sh
+ver all
+free
+hrt_smoke run
+hrt_smoke run
+free
+ps
+```
+
+Each successful run finishes with `hrt_smoke: PASS all checks`. The command
+checks one-shot and absolute-time scheduling, cancellation before expiry,
+NULL-callback deadline expiry, low-rate periodic callbacks followed by a quiet
+period after cancellation, and reuse after cancellation. Callback count,
+delay/interval, PID, `CONTROL`, and `IPSR` are printed outside the callback.
+`CONTROL.nPRIV=1` provides the user privilege evidence; unprivileged IPSR reads
+zero, so IPSR alone is not such evidence. Compare the callback PID with `usr_hrt`
+in `ps`. Pending, peak pending, delivered and coalesced counts are also shown.
+No new coalescing is expected in this low-load diagnostic; its broad timing
+bounds are a smoke check, not a flight-loop latency requirement.
+
+The command uses static storage and prevents concurrent invocations. If any
+check fails, save the full output and reboot before retrying; the failed
+session does not reuse its callback storage. Successful runs can be repeated
+to observe heap and stack trends. Active/pending replacement and callback
+self-cancel/rearm have host coverage but are not claimed as board-tested by
+this command. The new firmware and HRT checks still require hardware results;
+`v0.1` startup evidence does not automatically validate `v0.1.1`.

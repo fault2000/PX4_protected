@@ -67,6 +67,11 @@ typedef uint64_t	hrt_abstime;
  * Note that callouts run in the timer interrupt context, so
  * they are serialised with respect to each other, and must not
  * block.
+ * NuttX protected userspace callouts run in the usr_hrt task with scheduling
+ * locked instead. They must still be short and nonblocking; interrupts remain
+ * enabled. Do not sleep, wait on a lock, or perform blocking I/O in a callout.
+ * Protected user scheduling, cancellation and entry ownership changes belong
+ * to normal tasks or the owning callback, not asynchronous signal handlers.
  */
 typedef void	(* hrt_callout)(void *arg);
 
@@ -83,6 +88,7 @@ typedef struct hrt_call {
 #if defined(__PX4_NUTTX) && !defined(CONFIG_BUILD_FLAT)
 	hrt_callout		usr_callout;
 	void			*usr_arg;
+	struct hrt_call		*usr_next; /* pending user notification, separate from timer link */
 #endif
 } *hrt_call_t;
 
@@ -113,6 +119,18 @@ typedef struct latency_boardctl {
 	latency_info_t	latency;
 } latency_boardctl_t;
 
+/* User notification statistics, not proof that a callback has completed.
+ * At most one pending notification is retained per timer. Further expiries
+ * while it is pending are counted as coalesced, retaining the original FIFO
+ * position. Counters are cumulative and wrap at UINT32_MAX.
+ */
+typedef struct hrt_usr_status {
+	uint32_t pending;
+	uint32_t max_pending;
+	uint32_t coalesced;
+	uint32_t delivered;
+} hrt_usr_status_t;
+
 #define _HRTIOC(_n)		(_PX4_IOC(_HRTIOCBASE, _n))
 
 #define HRT_WAITEVENT		_HRTIOC(1)
@@ -123,6 +141,7 @@ typedef struct latency_boardctl {
 #define HRT_CANCEL		_HRTIOC(6)
 #define HRT_GET_LATENCY		_HRTIOC(7)
 #define HRT_RESET_LATENCY	_HRTIOC(8)
+#define HRT_GET_USER_STATUS	_HRTIOC(9)
 
 #endif
 
@@ -217,11 +236,18 @@ __EXPORT extern void	hrt_call_every(struct hrt_call *entry, hrt_abstime delay, h
  * or it has never been entered.
  *
  * Always returns false for repeating callouts.
+ * In protected userspace this reports kernel timer expiry, not completion of
+ * the deferred user callback. Cancel the entry before releasing its storage.
  */
 __EXPORT extern bool	hrt_called(struct hrt_call *entry);
 
 /**
  * Remove the entry from the callout list.
+ * In single-core NuttX protected userspace, this also removes pending user
+ * notifications. With nonblocking callbacks, an external caller can release
+ * the entry and callback argument after this returns. A callback may cancel
+ * itself, but must not use released storage afterward. Callers must serialize
+ * concurrent ownership changes and must not re-arm an entry being destroyed.
  */
 __EXPORT extern void	hrt_cancel(struct hrt_call *entry);
 
