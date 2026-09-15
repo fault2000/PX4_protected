@@ -5,9 +5,9 @@ protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
 another. Initial hardware startup and USB NSH access/reconnection have been confirmed;
 the basic protected HRT and user work queue diagnostics have also passed on hardware.
-The `v0.1.3` uORB callback bridge and diagnostic build successfully; their hardware
-validation is pending. Sustained runtime stability and MPU isolation validation
-remain in progress.
+The `v0.1.3` uORB diagnostic has passed three hardware runs, followed by HRT and
+work-queue regressions in the same image. Sleeping-subscriber wakeups, sustained
+runtime stability and MPU isolation validation remain in progress.
 
 The source baseline is:
 
@@ -426,8 +426,8 @@ callback self-cancel/rearm, coalescing under backlog, and behavior under
 sustained load remain separate checks. The following patch adds a user
 `ScheduledWorkItem` diagnostic for actual worker execution, stop/restart and
 lifetime cleanup after HRT delivery. The following hardware record covers its
-basic operation. Sustained validation and hardware acceptance of the uORB
-bridge described below are still required before `v0.2`.
+basic operation. The uORB record below adds basic callback hardware acceptance;
+blocking-subscription and sustained validation are still required before `v0.2`.
 
 ## User work queue diagnostic (v0.1.2, no patch tag)
 
@@ -593,7 +593,7 @@ delta support these explanations; they are not evidence of a per-run leak.
 Long-duration, concurrent-worker and allocation-ownership checks remain
 outside this short record. Basic `v0.1.2` work queue validation is complete.
 The following `v0.1.3` implementation addresses the uORB notification/callback
-boundary; its new image still requires hardware validation.
+boundary. Its basic hardware results are recorded below separately.
 
 ## Protected uORB callback boundary (v0.1.3, no patch tag)
 
@@ -741,12 +741,12 @@ No full flat or other-board firmware build is claimed.
 | Kernel static data | 61,296 |
 | User static reservation | 16,384 |
 
-These are working-tree build measurements; later source or Git-version
-metadata changes can affect image sizes. Hardware verification remains
-pending for this image. Earlier `v0.1.1`/`v0.1.2` board results remain evidence
-for their recorded firmware commits, not for the new dispatcher.
+These are local working-tree build measurements; later source or Git-version
+metadata changes can affect image sizes. The GCC 13.2.1 hardware record below
+applies to commit `a69eb3fa3f`, not to this locally built GCC 14.2.1 binary.
+Earlier `v0.1.1`/`v0.1.2` board results remain evidence for their recorded images.
 
-### Pending hardware acceptance
+### Hardware regression procedure
 
 Build and upload the new image, then record `ver all` and the complete USB NSH
 output. Use the first uORB run as warm-up before comparing repeated samples:
@@ -800,6 +800,115 @@ Compare warmed-up repetitions and subsequent HRT/work-queue snapshots rather
 than equating an immediate heap difference with a leak. A sleep alone is not
 guaranteed to drain deferred frees. Record whether any increase accumulates.
 
-Basic uORB hardware acceptance, a real sleeping-subscriber wake check,
-concurrent-topic/load behavior, sustained heap trends, and independent MPU
-validation remain follow-up work. The `v0.2` milestone has not been reached.
+The following record completes basic uORB hardware acceptance. A real
+sleeping-subscriber wake check, concurrent-topic/load behavior, sustained heap
+trends, and independent MPU validation remain follow-up work. The `v0.2`
+milestone has not been reached.
+
+## uORB hardware validation (2026-09-15)
+
+The user supplied one capture containing three successful `uorb_smoke run`
+invocations, then HRT and work-queue regressions, without a reported intervening
+reboot. The image identified PX4
+`a69eb3fa3fb6a530d5bf7a281736ebe8290dbba6`, NuttX
+`5ef31ffdf1a29202aca2c76c9727d663b49c0c51`, GCC 13.2.1, build time
+`Sep 15 2026 17:43:18`, FMUM `0x003`, BASE `0x005` and MCU revision V.
+
+| Observation | Run 1 | Run 2 | Run 3 |
+| --- | ---: | ---: | ---: |
+| Command PID | 13 | 26 | 29 |
+| User callback PID | 9 | 9 | 9 |
+| User work-item PID | 14 | 27 | 30 |
+| Kernel worker/native callback PID | 15 | 28 | 31 |
+| User notification delivered delta | 7 | 7 | 7 |
+| User notification coalesced delta | 7 | 7 | 7 |
+| Final registered / pending | 0 / 0 | 0 / 0 | 0 / 0 |
+| Peak pending | 1 | 1 | 1 |
+
+All three runs passed setup, publication-before-poll readiness/copy, direct
+user callback, pending unregister, re-registration, burst coalescing,
+self-unregister, callback-to-work-item delivery and unregister quiet checks.
+The controlled eight-publication burst produced one notification and seven
+coalesces, copying the latest value 407 as intended for the depth-one topic.
+The work-item callback's printed value 0 is its context-only trace; actual
+`Run()` separately copied and checked value 601.
+
+The user callbacks ran with `CONTROL=0x7`, including the kernel reply receiver.
+PID 9 matched `usr_uorb` in `ps`, confirming user dispatcher execution with
+nPRIV=1. User work-item runs also reported `CONTROL=0x7`. Each actual kernel
+worker and its native callback shared a PID and reported `CONTROL=0x4`, whose
+nPRIV bit is clear. The helper passed the user-request read and kernel reply,
+and the user callback copied response 9320 (`0x2468`). These checks establish
+the tested U->U, U->K, K->K and K->U functional paths. Both contexts printed
+`IPSR=0`; privilege evidence comes from CONTROL.nPRIV, not IPSR alone.
+
+Every user and kernel diagnostic worker reported successful exit. Each run
+ended with `PASS callback-cleanup` and `PASS all checks`. The helper's
+`released=1` means its publisher was successfully unadvertised; it is not a
+claim that all deferred kernel allocations have returned to the heap.
+
+After the third uORB run, `work_queue status` showed zero user workers and
+`ps` showed no temporary uORB worker. The persistent task observations were:
+
+| Task | PID | Priority | Stack used / reported size | Filled |
+| --- | ---: | ---: | ---: | ---: |
+| `usr_uorb` | 9 | 254 | 420 / 1,488 B | 28.2% |
+| `usr_hrt` | 7 | 255 | 420 / 960 B | 43.7% |
+| User `wq:manager` | 8 | 255 | 620 / 1,232 B | 50.3% |
+| `px4_entry` | 4 | 100 | 1,516 / 3,144 B | 48.2% |
+
+`usr_uorb` was waiting on a semaphore as expected with no pending notifications.
+These are the post-uORB, pre-HRT/work-queue-regression observations; the capture
+does not contain another `ps`/queue-status pair after the final regression.
+The completed temporary workers' stack high-water marks were not collected.
+
+### Heap observations
+
+| Snapshot | Kernel used (B) | User used (B) | Kernel nused / nfree | User nused / nfree |
+| --- | ---: | ---: | ---: | ---: |
+| Initial, after `ver all` | 37,312 | 20,656 | 172 / 2 | 60 / 2 |
+| After uORB run 1 and `sleep 2` | 37,776 | 22,928 | 179 / 3 | 66 / 3 |
+| After uORB run 2 and `sleep 2` | 37,776 | 22,928 | 179 / 3 | 66 / 3 |
+| After uORB run 3 and `sleep 2` | 37,776 | 22,928 | 179 / 3 | 66 / 3 |
+| After HRT + work queue and `sleep 2` | 37,776 | 22,928 | 179 / 3 | 66 / 4 |
+
+The first run increased kernel usage by 464 B and seven used blocks, and user
+usage by 2,272 B and six used blocks. These are net changes in the snapshots,
+not counts of allocation calls. Subsequent repetitions did not accumulate
+more used memory. All four post-run snapshots retained kernel free/largest
+207,632/206,784 B and user free/largest 107,792/105,920 B. The final user free
+block count changed from three to four; the heap statistics are therefore not
+identical in every field, although used/free/largest and used-block counts
+remain unchanged. This is not evidence by itself of a leak or corruption.
+There is no HRT-only heap snapshot to identify which regression changed the
+free-block layout.
+
+The persistent diagnostic topic nodes/buffers, deferred task-stack reclamation
+and reusable signal allocations described above are relevant to first-use
+versus repeated snapshots. This capture did not trace allocation addresses or
+prove ownership of the retained bytes. It supports no observed cumulative
+growth across these three uORB runs and the subsequent regressions, rather
+than long-duration leak freedom or a peak-memory bound.
+
+### HRT and work-queue regressions in the same image
+
+`hrt_smoke run` (command PID 43) passed all checks with callback PID 7 and
+`CONTROL=0x7`. Delivered increased 0 -> 8, pending ended at zero, max_pending
+was one and coalesced stayed zero. The 100 ms one-shot observation was
+100,053 us, absolute rearm 100,008 us, after-rearm 100,012 us, and periodic
+intervals 99,999--100,000 us. NULL-callback expiry was observed at 109,408 us
+through polling. These short observations do not establish worst-case latency.
+
+`work_queue_smoke run` (command PID 44, worker PID 45) passed all checks with
+`CONTROL=0x7`. Immediate execution took 17 us and the delayed run 100,030 us.
+Periodic intervals were 99,999--100,000 us; after restart they were
+99,999--100,001 us, with five data runs per phase. Six control runs and
+`PASS cleanup worker_pid=45 exited` confirmed the diagnostic's own cleanup.
+The final heap observation is included above.
+
+Basic `v0.1.3` uORB validation is complete. The next bounded diagnostic should
+cover a subscriber already waiting in `poll()` or `SubscriptionBlocking`,
+finite timeout without publication, wake/read/re-wait cycles, and limited
+periodic publication with sequence/timestamp observations. Multi-subscriber
+load, long-duration operation, repeated startup and independent MPU validation
+remain separate items; this record does not complete the `v0.2` milestone.
