@@ -30,8 +30,12 @@ follow-up commits separate protected-mode bring-up from USB NSH support. Inspect
 those changes with `git diff v1.17.0..main`.
 
 Research milestones use separate project tags: `v0.1` records the initial
-hardware bring-up and USB NSH reconnection, `v0.1.1`, `v0.1.2`, etc. identify follow-up patches, and
-`v0.2` marks completion and validation of the next work package. See
+hardware bring-up and USB NSH reconnection, and `v0.2` will mark completion and
+validation of the next work package. The existing `v0.1.1` HRT tag is retained
+as a historical reference. From the next patch onward, versions such as
+`v0.1.2` appear in commit subjects and the roadmap change record, without a new
+Git tag. A push publishes those commits; it has no separate version-message
+field. See
 [PROTECTED_ROADMAP.md](PROTECTED_ROADMAP.md) for the scope and versioning rules.
 The PX4 numeric firmware version remains based on `v1.17.0`; version generation
 excludes project tags matching `v0.*`. Firmware package identity may still
