@@ -34,8 +34,8 @@ follow-up commits separate protected-mode bring-up from USB NSH support. Inspect
 those changes with `git diff v1.17.0..main`.
 
 Research milestones use separate project tags: `v0.1` records the initial
-hardware bring-up and USB NSH reconnection, and `v0.2` will mark completion and
-validation of the next work package. The existing `v0.1.1` HRT tag is retained
+hardware bring-up and USB NSH reconnection, and `v0.2` records the basic HRT,
+user work-queue and uORB implementation and hardware validation package. The existing `v0.1.1` HRT tag is retained
 as a historical reference. From the next patch onward, versions such as
 `v0.1.2` appear in commit subjects and the roadmap change record, without a new
 Git tag. A push publishes those commits; it has no separate version-message
@@ -430,8 +430,8 @@ sustained load remain separate checks. The following patch adds a user
 `ScheduledWorkItem` diagnostic for actual worker execution, stop/restart and
 lifetime cleanup after HRT delivery. The following hardware record covers its
 basic operation. The uORB records below add basic callback and waiting-subscriber
-hardware acceptance; repeated startup and sustained observations remain before
-`v0.2`.
+hardware acceptance. Additional repeated startup and idle observations were
+skipped by user decision when closing `v0.2`; no pass is claimed for them.
 
 ## User work queue diagnostic (v0.1.2, no patch tag)
 
@@ -809,7 +809,7 @@ guaranteed to drain deferred frees. Record whether any increase accumulates.
 The following record completes basic `v0.1.3` uORB hardware acceptance. The
 later `v0.1.4` record adds real sleeping-subscriber wake checks. Concurrent-topic
 load, sustained heap trends and independent MPU validation remain follow-up
-work. The `v0.2` milestone has not been reached.
+work. The `v0.2` milestone records the completed basic validation scope.
 
 ## uORB hardware validation (2026-09-15)
 
@@ -918,7 +918,7 @@ timeout without publication, wake/read/re-wait cycles, and limited periodic
 publication with sequence/timestamp observations. Its three successful hardware
 runs are recorded below. Multi-subscriber load, long-duration operation,
 repeated startup and independent MPU validation
-remain separate items; this record does not complete the `v0.2` milestone.
+remain separate items outside the basic validation scope used to close `v0.2`.
 
 ## Waiting-subscriber diagnostic (v0.1.4, no patch tag)
 
@@ -1173,8 +1173,10 @@ not captured, and PID disappearance does not prove immediate heap reclamation.
   phases measured 99,999–100,000 us intervals. Six control runs completed and
   cleanup confirmed worker exit.
 
-Basic `v0.1.4` waiting-subscriber hardware validation is complete. This record
-does not create a patch tag or complete `v0.2`: the already planned repeated
-cold starts and idle observation remain. Multi-subscriber/load tests, longer
+Basic `v0.1.4` waiting-subscriber hardware validation is complete. On 2026-09-15
+the user chose to skip the additional ten cold starts and 30-minute idle
+observation and move to the next work package. These checks are unperformed,
+not passed. `v0.2` closes the implementation and basic hardware validation
+scope with that explicit exclusion; no new patch tag is created. Multi-subscriber/load tests, longer
 timing and memory observations, and independent MPU validation retain their
 separate follow-up scope in [PROTECTED_ROADMAP.md](PROTECTED_ROADMAP.md).
