@@ -4,7 +4,7 @@
 protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
 another. Successful hardware startup and MPU behavior have not yet been
-validated; see the startup BusFault correction below.
+validated; see the startup BusFault corrections below.
 
 The source baseline is:
 
@@ -124,7 +124,7 @@ output. The initial interactive NSH session uses USB; this configuration does
 not also start an interactive UART shell. USB NSH cannot show failures that
 occur before USB initialization, and it does not replay the UART startup log.
 
-## Startup BusFault correction (2026-09-15)
+## Startup BusFault corrections (2026-09-15)
 
 The first hardware UART capture showed a precise BusFault during
 `px4_log_initialize()` while uORB registered `log_message`. Using the exact
@@ -142,10 +142,28 @@ to the older file structure. Memory ranges and access permissions are retained;
 the common ARM MPU helper and flat build are unchanged. This makes user SRAM
 effectively cacheable on Cortex-M7, so DMA buffers still need cache maintenance.
 
-The corrected target built with GCC 14.2.1 on 2026-09-15 and passed the static
-artifact checks below. The corrected firmware has not yet been tested on the
-board. Preserve the original ELF and UART log, then capture a fresh power-on log
-at 57600 baud and check that startup reaches USB NSH. After connecting to USB
+With the MPU correction installed, the next hardware log reached the first
+uORB buffer allocation. The exact GCC 13.2.1 ELF identified `PC=0x0802f00a`
+as `ldr.w r4, [r0, #0x144]` in `mm_free_delaylist()`, called by
+`mm_malloc()` / `mm_memalign()` from `DeviceNode::write()`. With `R0=0`, the
+heap pointer was NULL and `BFAR=0x144`. This is a separate fault after the
+earlier atomic registration operation.
+
+The kernel link map exposed a userspace allocator archive pulled in by
+`uORB_kernel`'s `nuttx_mm` dependency. Its `memalign()` used a second,
+uninitialized `g_mmheap` in kernel BSS. The dependency now uses `nuttx_kmm`,
+whose protected wrappers obtain the initialized user heap through
+`USERSPACE->us_heap`. This preserves the allocation's user-heap ownership.
+
+The artifact checker now rejects userspace `libmm.a` in the kernel map and a
+duplicate kernel `g_mmheap`, and requires the protected `memalign()` wrapper
+and the user-space heap pointer. It rejected the pre-fix image and passed on
+the corrected image; disassembly also confirmed the corrected heap lookup.
+
+The target with both corrections built with GCC 14.2.1 on 2026-09-15 and passed
+the static artifact checks below. Hardware startup after the allocator fix is
+still unverified. Preserve the original ELF and UART log, then capture a fresh
+power-on log at 57600 baud and check that startup reaches USB NSH. After connecting to USB
 and pressing Enter three times, run `ver all`, `free`, `ps`, `work_queue status`
 and `dmesg`. Successful startup is the next acceptance gate; it does not complete
 the remaining protected-mode validation.

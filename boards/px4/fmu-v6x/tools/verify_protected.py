@@ -77,8 +77,17 @@ assert 'stm32_configgpio' in ks and 'stm32_configgpio' not in us
 assert 'nsh_consolemain' in us and 'nsh_consolemain' not in ks
 assert 'cdcacm_initialize' in ks and 'cdcacm_initialize' not in us
 assert 'nsh_usbconsole.c' in (build / (name + '.map')).read_text()
+
+# The kernel must use the protected allocator wrappers from libkmm. Linking
+# userspace libmm can make memalign use an uninitialized kernel g_mmheap copy.
+kernel_map = (build / (name + '_kernel.map')).read_text()
+assert 'libmm.a' not in kernel_map, 'Userspace allocator archive linked into kernel'
+assert 'libkmm.a(umm_memalign.o)' in kernel_map, 'Kernel memalign wrapper missing'
+assert 'g_mmheap' not in ks, 'Userspace heap pointer duplicated in kernel'
+assert us['_sbss'] <= us['g_mmheap'] < us['_ebss'], 'User heap pointer outside user BSS'
+
 report = {
-    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot placement, USB NSH configuration and kernel/user placement',
+    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot placement, USB NSH configuration, kernel/user placement and allocator linkage',
     'board_id': fw['board_id'],
     'kernel_flash_bytes': kflash_end - 0x08020000,
     'user_flash_bytes': max(s['paddr'] + s['filesz'] for s in uloads if s['filesz']) - 0x08100000,
