@@ -38,8 +38,15 @@ px4_add_library(vehicle_air_data
 target_link_libraries(vehicle_air_data
 	PRIVATE
 		data_validator
-		px4_work_queue
 		sensor_calibration
 	PUBLIC
 		atmosphere
 )
+
+# This library runs in the same protected layer as its sensors module.
+if("${PX4_PLATFORM}" STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT AND NOT CONFIG_USER_SENSORS)
+	target_compile_definitions(vehicle_air_data PRIVATE __KERNEL__)
+	target_link_libraries(vehicle_air_data PRIVATE px4_work_queue_kernel)
+else()
+	target_link_libraries(vehicle_air_data PRIVATE px4_work_queue)
+endif()

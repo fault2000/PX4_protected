@@ -233,6 +233,10 @@ function(px4_add_module)
 		# using target_link_libraries for dependencies provides linking
 		#  as well as interface include and libraries
 		foreach(dep ${DEPENDS})
+			if(dep STREQUAL "px4_work_queue" AND "${PX4_PLATFORM}" STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT AND KERNEL)
+				set(dep px4_work_queue_kernel)
+			endif()
+
 			get_target_property(dep_type ${dep} TYPE)
 			if((${dep_type} STREQUAL "STATIC_LIBRARY") OR (${dep_type} STREQUAL "INTERFACE_LIBRARY"))
 				target_link_libraries(${MODULE} PRIVATE ${dep})

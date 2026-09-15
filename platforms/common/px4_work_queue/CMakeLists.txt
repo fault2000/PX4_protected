@@ -31,13 +31,23 @@
 #
 ############################################################################
 
-px4_add_library(px4_work_queue
+set(WORK_QUEUE_SRCS
 	ScheduledWorkItem.cpp
 	WorkItem.cpp
 	WorkItemSingleShot.cpp
 	WorkQueue.cpp
 	WorkQueueManager.cpp
 )
+
+px4_add_library(px4_work_queue ${WORK_QUEUE_SRCS})
+
+if(NOT CONFIG_BUILD_FLAT AND "${PX4_PLATFORM}" STREQUAL "nuttx")
+	# Kernel queues accept ISR work and must retain IRQ-based locking. Do not
+	# reuse the user archive, whose queue locks use the single-core scheduler.
+	px4_add_library(px4_work_queue_kernel ${WORK_QUEUE_SRCS})
+	target_compile_definitions(px4_work_queue_kernel PRIVATE __KERNEL__)
+	target_compile_options(px4_work_queue_kernel PRIVATE ${MAX_CUSTOM_OPT_LEVEL})
+endif()
 
 if(PX4_TESTING)
 	add_subdirectory(test)

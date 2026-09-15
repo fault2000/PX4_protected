@@ -55,7 +55,12 @@ add_library(px4_platform STATIC
 	Serial.cpp
 	${SRCS}
 )
-target_link_libraries(px4_platform prebuild_targets px4_work_queue)
+target_link_libraries(px4_platform prebuild_targets)
+
+# Protected layers select their own user/kernel work queue implementation.
+if(CONFIG_BUILD_FLAT OR NOT "${PX4_PLATFORM}" STREQUAL "nuttx")
+	target_link_libraries(px4_platform px4_work_queue)
+endif()
 
 if(NOT "${PX4_BOARD}" MATCHES "io-v2")
 	add_subdirectory(uORB)

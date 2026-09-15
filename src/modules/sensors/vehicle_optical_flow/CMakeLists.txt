@@ -35,7 +35,14 @@ px4_add_library(vehicle_optical_flow
 	VehicleOpticalFlow.cpp
 	VehicleOpticalFlow.hpp
 )
-target_link_libraries(vehicle_optical_flow PRIVATE px4_work_queue)
+
+# This library runs in the same protected layer as its sensors module.
+if("${PX4_PLATFORM}" STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT AND NOT CONFIG_USER_SENSORS)
+	target_compile_definitions(vehicle_optical_flow PRIVATE __KERNEL__)
+	target_link_libraries(vehicle_optical_flow PRIVATE px4_work_queue_kernel)
+else()
+	target_link_libraries(vehicle_optical_flow PRIVATE px4_work_queue)
+endif()
 
 if(BUILD_TESTING)
 	add_subdirectory(test)

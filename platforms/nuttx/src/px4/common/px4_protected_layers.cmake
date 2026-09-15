@@ -24,6 +24,7 @@ target_link_libraries(px4_layer
 		nuttx_c
 		nuttx_xx
 		nuttx_mm
+		px4_work_queue
 )
 
 # Build the interface library between user and kernel side
@@ -55,6 +56,7 @@ target_link_libraries(px4_kernel_layer
 		nuttx_karch
 		nuttx_kmm
 		px4_platform
+		px4_work_queue_kernel
 	PRIVATE
 		kernel_events_interface # events_ioctl_init
 )

@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import base64, hashlib, json, struct, subprocess, sys, zlib
+import re
 
 build = Path(sys.argv[1]).resolve()
 name = 'px4_fmu-v6x_protected'
@@ -81,17 +82,41 @@ assert 'nsh_usbconsole.c' in (build / (name + '.map')).read_text()
 assert 'hrt_smoke_main' in us and 'hrt_smoke_main' not in ks, 'HRT diagnostic must run in userspace'
 assert 'hrt_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
 assert 'hrt_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
+assert 'work_queue_smoke_main' in us and 'work_queue_smoke_main' not in ks, 'Work queue diagnostic must run in userspace'
+assert 'work_queue_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
+assert 'work_queue_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
 
 # The kernel must use the protected allocator wrappers from libkmm. Linking
 # userspace libmm can make memalign use an uninitialized kernel g_mmheap copy.
 kernel_map = (build / (name + '_kernel.map')).read_text()
+user_map = (build / (name + '.map')).read_text()
+# The user queue uses scheduler exclusion; the kernel queue retains IRQ
+# exclusion. They must come from separately compiled archives.
+assert 'libpx4_work_queue.a' not in kernel_map, 'Userspace work queue archive linked into kernel'
+assert 'libpx4_work_queue_kernel.a(WorkQueue.cpp.obj)' in kernel_map, 'Kernel work queue archive missing'
+assert 'libpx4_work_queue_kernel.a' not in user_map, 'Kernel work queue archive linked into userspace'
+assert 'libpx4_work_queue.a(WorkQueue.cpp.obj)' in user_map, 'Userspace work queue archive missing'
+
+# Check the actual lock implementation in the two linked images, not just the
+# archive names: protected user code must not attempt privileged IRQ masking.
+queue_add = '_ZN3px49WorkQueue3AddEPNS_8WorkItemE'
+def disassemble(path, symbol):
+    return subprocess.check_output(['arm-none-eabi-objdump', '-d', '--disassemble=' + symbol, str(path)], text=True)
+
+user_add = disassemble(build / (name + '.elf'), queue_add)
+kernel_add = disassemble(build / (name + '_kernel.elf'), queue_add)
+assert '<sched_lock>' in user_add and '<sched_unlock>' in user_add, 'User work queue scheduler locking missing'
+irq_mask = r'\b(?:msr\s+(?:BASEPRI|PRIMASK)|cpsid)\b'
+assert not re.search(irq_mask, user_add, re.IGNORECASE), 'User work queue attempts privileged IRQ masking'
+assert re.search(irq_mask, kernel_add, re.IGNORECASE), 'Kernel work queue IRQ locking missing'
+assert '<sched_lock>' not in kernel_add, 'Kernel work queue uses user scheduler locking'
 assert 'libmm.a' not in kernel_map, 'Userspace allocator archive linked into kernel'
 assert 'libkmm.a(umm_memalign.o)' in kernel_map, 'Kernel memalign wrapper missing'
 assert 'g_mmheap' not in ks, 'Userspace heap pointer duplicated in kernel'
 assert us['_sbss'] <= us['g_mmheap'] < us['_ebss'], 'User heap pointer outside user BSS'
 
 report = {
-    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot and HRT diagnostic placement, USB NSH configuration, kernel/user placement and allocator linkage',
+    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot, HRT and work queue diagnostic placement, separate kernel/user work queue archives and lock instructions, USB NSH configuration, kernel/user placement and allocator linkage',
     'board_id': fw['board_id'],
     'kernel_flash_bytes': kflash_end - 0x08020000,
     'user_flash_bytes': max(s['paddr'] + s['filesz'] for s in uloads if s['filesz']) - 0x08100000,
@@ -103,6 +128,7 @@ report = {
     'hardware_boot_verified': False,
     'usb_console_hardware_verified': False,
     'hrt_smoke_hardware_verified': False,
+    'work_queue_smoke_hardware_verified': False,
 }
 print(json.dumps(report, indent=2))
 (build / 'protected-artifact-check.json').write_text(json.dumps(report, indent=2) + '\n')

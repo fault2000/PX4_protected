@@ -43,6 +43,10 @@
 #include <px4_platform_common/sem.h>
 #include <px4_platform_common/tasks.h>
 
+#if defined(__PX4_NUTTX) && defined(CONFIG_BUILD_PROTECTED) && !defined(__KERNEL__)
+#include <sched.h>
+#endif
+
 namespace px4
 {
 
@@ -82,7 +86,16 @@ private:
 
 	inline void SignalWorkerThread();
 
-#ifdef __PX4_NUTTX
+#if defined(__PX4_NUTTX) && defined(CONFIG_BUILD_PROTECTED) && !defined(__KERNEL__)
+#if defined(CONFIG_SMP)
+#error "Protected user work queues require a single-core scheduler"
+#endif
+	// User HRT callbacks run in a task, not an ISR. Unprivileged code cannot
+	// mask interrupts, so serialize user queue access through the scheduler.
+	// These locks nest with the user HRT dispatcher's nonblocking callback lock.
+	void work_lock() { sched_lock(); }
+	void work_unlock() { sched_unlock(); }
+#elif defined(__PX4_NUTTX)
 	// In NuttX work can be enqueued from an ISR
 	void work_lock() { _flags = enter_critical_section(); }
 	void work_unlock() { leave_critical_section(_flags); }

@@ -1,0 +1,13 @@
+menuconfig SYSTEMCMDS_WORK_QUEUE_SMOKE
+	bool "work_queue_smoke"
+	default n
+	depends on BOARD_PROTECTED && PLATFORM_NUTTX && BOARD_ARCHITECTURE = "cortex-m7"
+	---help---
+		Bounded user work queue scheduling, stop, restart and cleanup checks.
+
+config USER_WORK_QUEUE_SMOKE
+	bool
+	default y
+	depends on BOARD_PROTECTED && SYSTEMCMDS_WORK_QUEUE_SMOKE
+	---help---
+		Run work_queue_smoke in userspace memory.

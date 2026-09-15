@@ -42,4 +42,12 @@ target_compile_options(vehicle_imu
 		#-DDEBUG_BUILD
 )
 
-target_link_libraries(vehicle_imu PRIVATE px4_work_queue sensor_calibration)
+target_link_libraries(vehicle_imu PRIVATE sensor_calibration)
+
+# This library runs in the same protected layer as its sensors module.
+if("${PX4_PLATFORM}" STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT AND NOT CONFIG_USER_SENSORS)
+	target_compile_definitions(vehicle_imu PRIVATE __KERNEL__)
+	target_link_libraries(vehicle_imu PRIVATE px4_work_queue_kernel)
+else()
+	target_link_libraries(vehicle_imu PRIVATE px4_work_queue)
+endif()

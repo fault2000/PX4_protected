@@ -45,6 +45,13 @@ target_compile_options(vehicle_angular_velocity
 target_link_libraries(vehicle_angular_velocity
 	PRIVATE
 		mathlib
-		px4_work_queue
 		sensor_calibration
 )
+
+# This library runs in the same protected layer as its sensors module.
+if("${PX4_PLATFORM}" STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT AND NOT CONFIG_USER_SENSORS)
+	target_compile_definitions(vehicle_angular_velocity PRIVATE __KERNEL__)
+	target_link_libraries(vehicle_angular_velocity PRIVATE px4_work_queue_kernel)
+else()
+	target_link_libraries(vehicle_angular_velocity PRIVATE px4_work_queue)
+endif()

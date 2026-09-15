@@ -40,5 +40,12 @@ target_compile_options(follow_target_estimator PRIVATE ${MAX_CUSTOM_OPT_LEVEL})
 target_link_libraries(follow_target_estimator
 	PRIVATE
 		mathlib
-		px4_work_queue
 )
+
+# This library runs in the same protected layer as flight_mode_manager.
+if("${PX4_PLATFORM}" STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT AND NOT CONFIG_USER_FLIGHT_MODE_MANAGER)
+	target_compile_definitions(follow_target_estimator PRIVATE __KERNEL__)
+	target_link_libraries(follow_target_estimator PRIVATE px4_work_queue_kernel)
+else()
+	target_link_libraries(follow_target_estimator PRIVATE px4_work_queue)
+endif()

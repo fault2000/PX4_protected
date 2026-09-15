@@ -40,7 +40,14 @@ px4_add_library(vehicle_gps_position
 target_link_libraries(vehicle_gps_position
 	PRIVATE
 		geo
-		px4_work_queue
 )
+
+# This library runs in the same protected layer as its sensors module.
+if("${PX4_PLATFORM}" STREQUAL "nuttx" AND NOT CONFIG_BUILD_FLAT AND NOT CONFIG_USER_SENSORS)
+	target_compile_definitions(vehicle_gps_position PRIVATE __KERNEL__)
+	target_link_libraries(vehicle_gps_position PRIVATE px4_work_queue_kernel)
+else()
+	target_link_libraries(vehicle_gps_position PRIVATE px4_work_queue)
+endif()
 
 px4_add_unit_gtest(SRC gps_blending_test.cpp LINKLIBS vehicle_gps_position)

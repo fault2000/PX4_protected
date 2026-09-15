@@ -102,7 +102,7 @@ through `px4_entry`, then NSH runs `init/rc.protected` as
 and `work_queue status`; it does not run the normal flight startup script.
 
 Available diagnostics include `dmesg`, `hardfault_log`, `hrt_smoke`, `mft`, `mtd`, `param`,
-`perf`, `reboot`, `top`, `listener`, `uorb`, `ver`, `work_queue`, and the protected
+`perf`, `reboot`, `top`, `listener`, `uorb`, `ver`, `work_queue`, `work_queue_smoke`, and the protected
 kernel-command launcher. Flight modules, PX4 sensor/output drivers, Ethernet,
 Telnet and PX4 USB protocol autodetection are disabled. The `reboot` command
 runs in the kernel because FMUv6X reset lockout controls GPIO. The broad PX4
@@ -272,7 +272,7 @@ These measurements describe the pre-publication working-tree build. Git
 version metadata can change image sizes after committing the sources.
 
 To repeat the artifact checks, use the versioned verification script. It
-requires Python 3 and `arm-none-eabi-nm` from the ARM toolchain, and writes
+requires Python 3, `arm-none-eabi-nm` and `arm-none-eabi-objdump` from the ARM toolchain, and writes
 `protected-artifact-check.json` into the selected build directory:
 
 ```sh
@@ -419,7 +419,90 @@ callbacks.
 
 Hardware FIFO ordering across multiple timers, pending-event replacement,
 callback self-cancel/rearm, coalescing under backlog, and behavior under
-sustained load remain separate checks. The next implementation target is a
-user `ScheduledWorkItem` diagnostic that verifies actual worker execution,
-stop/restart and lifetime cleanup after HRT delivery. Its completion and the
-remaining uORB work are still required before `v0.2`.
+sustained load remain separate checks. The following patch adds a user
+`ScheduledWorkItem` diagnostic for actual worker execution, stop/restart and
+lifetime cleanup after HRT delivery. Its hardware validation and the remaining
+uORB work are still required before `v0.2`.
+
+## User work queue diagnostic (v0.1.2, no patch tag)
+
+Protected user queues now use nested `sched_lock()` / `sched_unlock()` for
+queue access. User tasks cannot mask interrupts using the inline ARM
+BASEPRI/PRIMASK operations used by the original NuttX queue lock. The new path
+requires one CPU and assumes queue producers execute in user task context,
+including the nonblocking `usr_hrt` dispatcher. Asynchronous signal handlers
+are outside this contract. Kernel queues continue to use IRQ exclusion.
+
+The build compiles `px4_work_queue` for userspace and a separate
+`px4_work_queue_kernel` with `__KERNEL__` defined. Each protected platform layer
+selects its own archive; direct module dependencies are also mapped for kernel
+modules. Seven sensor libraries and `follow_target_estimator` select the archive
+and compile definition for their owning module's configured layer. Flat and
+POSIX builds keep the original library and lock selection.
+The artifact checker rejects either archive appearing in the wrong ELF map
+and verifies scheduler calls in user `WorkQueue::Add()` and IRQ masking in
+the kernel implementation.
+This does not fix the separate uORB user-callback boundary described in the
+roadmap.
+
+`work_queue_smoke run` creates a dedicated user queue named `wq:usr_smoke` with
+a requested 2,048-byte stack and priority 205. It checks immediate execution,
+a 100 ms delayed run, cancellation before a 300 ms deadline, 100 ms periodic
+execution, stop, and periodic restart on the same object. Each periodic phase
+waits for at least five data runs, then observes 300 ms with no further data
+run. The command prints worker PID, CONTROL/IPSR, counts and timing. CONTROL's
+nPRIV bit must be set, and the worker PID must remain consistent and differ
+from the command PID. Timing bounds are broad functional checks, not a
+worst-case latency guarantee.
+
+`ScheduleClear()` does not wait for an item already popped by the worker.
+The diagnostic requests a control `Run()` on the same object to acknowledge
+quiescence; control runs are counted separately from data runs. Final cleanup
+detaches on the worker and waits until that worker PID no longer exists before
+deleting the object. The full successful sequence normally has six control
+runs. A failed check latches the session; uncertain cleanup retains the object
+and static queue configuration until reboot rather than reusing their storage.
+
+After uploading the new firmware, collect this USB NSH sequence:
+
+```sh
+ver all
+free
+work_queue status
+work_queue_smoke run
+work_queue_smoke run
+free
+work_queue status
+ps
+hrt_smoke run
+```
+
+Both work queue runs must finish with `PASS cleanup ... exited` and
+`PASS all checks`. The private `wq:usr_smoke` task/queue should be absent after
+successful cleanup. Record heap and stack observations with the exact firmware
+hash and toolchain; background allocation or deferred task-stack reclamation
+can affect immediate heap snapshots, so record a later snapshot if they differ.
+The final HRT run checks the existing timer path after queue cleanup.
+
+Local GCC 14.2.1 firmware build and artifact checks passed. The actual ARM
+`WorkQueue.cpp` also compiled in protected user, protected kernel and flat
+variants: user `Add()` calls scheduler locking, kernel/flat retain IRQ masking,
+and a protected user SMP configuration is rejected. The existing eight HRT
+host checks still passed. Six isolated CMake configurations using the eight
+consumer libraries confirmed kernel/user, mixed-owner, flat and POSIX archive
+selection and private compile definitions. These libraries remain disabled in
+the minimal target; their full compiled runtime paths remain unverified.
+These checks do not execute the new diagnostic on
+hardware, and no full flat or other-board firmware build is claimed.
+
+| Pre-publication artifact measurement | Bytes |
+| --- | ---: |
+| Kernel flash image | 272,352 |
+| User flash image | 104,384 |
+| Combined binary, including flash gap | 1,021,888 |
+| Kernel static data | 60,192 |
+| User static reservation | 16,384 |
+
+Version metadata can change image sizes after committing. Hardware results
+for this patch are pending. The previous `v0.1.1` HRT results
+apply to their recorded image and do not validate this new queue path.
