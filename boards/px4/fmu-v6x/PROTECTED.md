@@ -5,11 +5,11 @@ protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
 another. Initial hardware startup and USB NSH access/reconnection have been confirmed;
 the basic protected HRT and user work queue diagnostics have also passed on hardware.
-The `v0.1.3` uORB diagnostic has passed three hardware runs, followed by HRT and
-work-queue regressions in the same image. Sleeping-subscriber wakeups, sustained
-runtime stability and MPU isolation validation remain in progress.
-The `v0.1.4` waiting-subscriber diagnostic is implemented; hardware results
-for that new image are pending.
+The `v0.1.3` uORB diagnostic has passed three hardware runs. The `v0.1.4`
+waiting-subscriber diagnostic has also passed three runs across user/kernel
+producers and poll/condition waits, followed by uORB, HRT and work-queue
+regressions in the same image. Repeated startup, sustained runtime stability
+and MPU isolation validation remain separate work.
 
 The source baseline is:
 
@@ -429,8 +429,9 @@ callback self-cancel/rearm, coalescing under backlog, and behavior under
 sustained load remain separate checks. The following patch adds a user
 `ScheduledWorkItem` diagnostic for actual worker execution, stop/restart and
 lifetime cleanup after HRT delivery. The following hardware record covers its
-basic operation. The uORB record below adds basic callback hardware acceptance;
-blocking-subscription and sustained validation are still required before `v0.2`.
+basic operation. The uORB records below add basic callback and waiting-subscriber
+hardware acceptance; repeated startup and sustained observations remain before
+`v0.2`.
 
 ## User work queue diagnostic (v0.1.2, no patch tag)
 
@@ -662,8 +663,9 @@ path also rechecks for an update while holding the condition mutex and the
 scheduler guard, then retains the guard through NuttX's condition wait. This
 closes the check-to-wait window within the same single-core contract. The
 `v0.1.3` board diagnostic does not exercise a sleeping `SubscriptionBlocking`
-waiter. The new `v0.1.4` diagnostic below exercises that path, but its actual
-waiting behavior remains hardware-unverified.
+waiter. The `v0.1.4` diagnostic below has passed three hardware runs of that
+path, including finite timeout, periodic wake/read/re-wait and reuse. This
+covers its 200 ms and 1 s wait arguments, not every timeout or load condition.
 
 This change establishes a functional callback execution boundary. It does not
 provide individual user-module isolation, validate every syscall argument, or
@@ -804,10 +806,10 @@ Compare warmed-up repetitions and subsequent HRT/work-queue snapshots rather
 than equating an immediate heap difference with a leak. A sleep alone is not
 guaranteed to drain deferred frees. Record whether any increase accumulates.
 
-The following record completes basic uORB hardware acceptance. A real
-sleeping-subscriber wake check, concurrent-topic/load behavior, sustained heap
-trends, and independent MPU validation remain follow-up work. The `v0.2`
-milestone has not been reached.
+The following record completes basic `v0.1.3` uORB hardware acceptance. The
+later `v0.1.4` record adds real sleeping-subscriber wake checks. Concurrent-topic
+load, sustained heap trends and independent MPU validation remain follow-up
+work. The `v0.2` milestone has not been reached.
 
 ## uORB hardware validation (2026-09-15)
 
@@ -913,9 +915,9 @@ The final heap observation is included above.
 Basic `v0.1.3` uORB validation is complete. The `v0.1.4` diagnostic below covers
 a subscriber already waiting in `poll()` or `SubscriptionBlocking`, finite
 timeout without publication, wake/read/re-wait cycles, and limited periodic
-publication with sequence/timestamp observations. Its hardware results are
-pending. Multi-subscriber
-load, long-duration operation, repeated startup and independent MPU validation
+publication with sequence/timestamp observations. Its three successful hardware
+runs are recorded below. Multi-subscriber load, long-duration operation,
+repeated startup and independent MPU validation
 remain separate items; this record does not complete the `v0.2` milestone.
 
 ## Waiting-subscriber diagnostic (v0.1.4, no patch tag)
@@ -1003,7 +1005,9 @@ wait-identity storage symbols in user BSS. Existing uORB broker host checks
 and HRT regressions remain separate from this diagnostic: they do not execute
 these real NuttX waits. The local GCC 14.2.1 full protected build and artifact
 checker passed, as did the existing seven broker and eight HRT host checks.
-No full flat or other-board build, or new hardware result, is claimed.
+No full flat or other-board build is claimed. These local build/host checks
+are separate from the GCC 13.2.1 hardware results below; the local GCC 14.2.1
+binary has not been hardware-validated by that capture.
 
 | Pre-publication artifact measurement | Bytes |
 | --- | ---: |
@@ -1014,10 +1018,10 @@ No full flat or other-board build, or new hardware result, is claimed.
 | User static reservation | 16,384 |
 
 These are local working-tree measurements; final Git metadata can change image
-sizes. The recorded GCC 13.2.1 `v0.1.3` hardware results do not establish the
-runtime behavior of this new diagnostic.
+sizes. The following hardware record identifies its own source and toolchain;
+these local sizes are not measurements of the user's GCC 13.2.1 image.
 
-### Pending hardware acceptance
+### Hardware regression procedure
 
 After building and uploading, collect this USB NSH sequence. The first run
 warms up persistent uORB/poll storage and reusable task resources; compare
@@ -1057,3 +1061,120 @@ remaining task stacks with the exact image hash and toolchain. Temporary
 `uorb:usr_wait` and `uorb:k_wait` tasks should be absent after cleanup;
 `usr_uorb` and `usr_hrt` remain. These checks do not replace multi-subscriber
 stress, sustained heap/timing observations or the remaining `v0.2` work.
+
+### Waiting-subscriber hardware validation (2026-09-15)
+
+The user supplied the complete sequence above from FMUv6X, FMUM `0x003`, BASE
+`0x005`, MCU revision V. The image reported PX4
+`8e05753feb2d7f6b96594bf0ad316bdec06c8ed7`, NuttX
+`5ef31ffdf1a29202aca2c76c9727d663b49c0c51`, protected mode, GNU GCC
+`13.2.1 20231009`, and build time `Sep 15 2026 18:51:28`. No reboot was reported
+between these commands. All three `uorb_wait_smoke run` invocations passed all
+four cases and cleanup. No fault or failed check appears in the capture.
+
+| Result | Each invocation | Across three invocations |
+| --- | ---: | ---: |
+| Exact API semaphore wait observations | 32 | 96 |
+| No-publication timeouts | 8 | 24 |
+| Received samples | 24 | 72 |
+| Periodic samples / final re-wake samples | 20 / 4 | 60 / 12 |
+| Missed / duplicate or old samples | 0 / 0 | 0 / 0 |
+| uORB callback deliveries / coalesced | 12 / 0 | 36 / 0 |
+| Final registered / pending | 0 / 0 | 0 / 0 after each run |
+
+Each case reported `observations=8 samples=6`, and every observer reported
+`count=8 worker=8 check=0`. These last two counters identify which path first
+observed each sequence: the worker observed all eight first. User producers
+still called `check` immediately before publication, rechecking the exact wait;
+`check=0` does not mean those checks were omitted. All 12 kernel workers
+reported `exited=1 released=1 reason=none`, and all six user producers reported
+`published=6 exited=1`. As above, `released` means successful unadvertising.
+
+Command/consumer PIDs 13, 31 and 59 and user producer PIDs 15, 28, 43, 46, 61
+and 74 reported `CONTROL=0x7 IPSR=0`. Kernel observer/producer PIDs 14, 26, 27,
+30, 42, 44, 45, 58, 60, 62, 63 and 76 reported `CONTROL=0x4 IPSR=0`.
+The nPRIV bit confirms the intended user/kernel execution privileges; the
+recorded IPSR values were zero.
+
+Timing ranges below combine all three runs; every value is in microseconds.
+The interval column covers each five-sample periodic batch, while publication
+lateness and receive latency also include the final re-wake sample.
+
+| Case | First / second timeout | Publication lateness | Receive latency | Periodic publication interval |
+| --- | ---: | ---: | ---: | ---: |
+| poll / user | 200,766–200,767 / 200,936–200,940 | 988–1,990 | 15–18 | 99,998–100,001 |
+| poll / kernel | 200,929–200,936 / 200,955 | 973–976 | 12–13 | 99,999–100,001 |
+| SubscriptionBlocking / user | 200,767–200,769 / 200,916–200,918 | 991–993 | 40–42 | 99,999–100,000 |
+| SubscriptionBlocking / kernel | 200,910–200,912 / 200,935 | 973–974 | 39–41 | 100,000–100,000 |
+
+Publication lateness measures release relative to the planned deadline; it is
+not subscriber wake latency. The roughly 1 ms release delays are consistent
+with the producer's 1 ms sleep loop and scheduler tick, without identifying the
+cause of every individual delay. Poll receive timing ends immediately after
+`poll()` returns, before copying, whereas blocking receive timing includes
+`updateBlocking()` and its copy. These measurements are not equivalent API
+benchmarks. These short runs establish neither worst-case latency under load
+nor sensor-to-control latency.
+
+#### Heap and task observations
+
+Each post-command heap snapshot followed `sleep 2`. Totals remained 245,408 B
+for Kmem and 130,720 B for Umem. Values below are bytes except block counts.
+
+| Snapshot | Kmem used / free / largest | Kmem nused / nfree | Umem used / free / largest | Umem nused / nfree |
+| --- | ---: | ---: | ---: | ---: |
+| Before first wait run | 37,312 / 208,096 / 207,168 | 172 / 2 | 20,656 / 110,064 / 109,552 | 60 / 2 |
+| After wait run 1 | 37,680 / 207,728 / 203,280 | 177 / 4 | 23,344 / 107,376 / 105,824 | 64 / 3 |
+| After wait run 2 | 37,680 / 207,728 / 203,280 | 177 / 4 | 23,344 / 107,376 / 105,824 | 64 / 3 |
+| After wait run 3 | 37,680 / 207,728 / 203,280 | 177 / 4 | 23,344 / 107,376 / 105,824 | 64 / 3 |
+| After uORB, HRT and work-queue regressions | 37,776 / 207,632 / 203,280 | 179 / 4 | 22,928 / 107,792 / 103,824 | 66 / 4 |
+
+The first wait run added 368 B of kernel use and 2,688 B of user use. All
+reported heap fields then matched across the three post-wait snapshots: no
+accumulating increase was observed in these repetitions.
+
+The final snapshot followed a different workload, with no intermediate heap
+samples between the three regression commands. Compared with the wait plateau,
+Kmem use increased 96 B and Umem use decreased 416 B; each gained two used
+blocks. User free space increased while its largest free block decreased
+2,000 B. This is not an identical final heap or evidence of per-run growth.
+The wait command uses only `orb_test`; `uorb_smoke` additionally creates retained
+`orb_multitest` storage. Its extra topic allocations and the 512 B difference
+between the wait and work-queue command stack requests are consistent with
+these changes when deferred stack reclamation is considered. This is a
+source-consistent explanation, not allocation ownership traced on this board.
+Long-term fragmentation and heap trends remain unmeasured.
+
+| Persistent task | PID | Stack used / reported size after wait run 3 | After all regressions |
+| --- | ---: | ---: | ---: |
+| `usr_uorb` | 9 | 420 / 1,488 B (28.2%) | 420 / 1,488 B (28.2%) |
+| `usr_hrt` | 7 | 420 / 960 B (43.7%) | 420 / 960 B (43.7%) |
+| User `wq:manager` | 8 | 372 / 1,232 B (30.1%) | 628 / 1,232 B (50.9%) |
+| `px4_entry` | 4 | 1,508 / 3,144 B (47.9%) | 1,548 / 3,144 B (49.2%) |
+
+Both `ps` snapshots contained only the persistent PIDs 0–9; the temporary wait,
+uORB and work-queue workers were absent. Final `work_queue status` reported zero
+user work queues. Terminated diagnostic tasks' own stack high-water marks were
+not captured, and PID disappearance does not prove immediate heap reclamation.
+
+#### Existing diagnostics on the same image
+
+- `uorb_smoke run` passed all checks. User callbacks ran in PID 9, the user
+  WorkItem in PID 78 (`CONTROL=0x7`), and the kernel worker/native callback in
+  PID 79 (`CONTROL=0x4`). Delivered/coalesced deltas were 7/7, final registered
+  and pending were zero, and both temporary workers exited.
+- `hrt_smoke run` passed all checks with callback PID 7, `CONTROL=0x7`.
+  Delivered increased 0→8 with zero pending and zero coalesced at the end.
+  Five periodic callbacks had 100,000 us intervals. One-shot observations were
+  100,013, 100,008 and 100,012 us; NULL-callback expiry was detected at 109,408 us
+  by polling, as in the earlier diagnostic.
+- `work_queue_smoke run` passed with worker PID 92, `CONTROL=0x7`. Immediate
+  work ran after 18 us and delayed work after 100,031 us. Both five-run periodic
+  phases measured 99,999–100,000 us intervals. Six control runs completed and
+  cleanup confirmed worker exit.
+
+Basic `v0.1.4` waiting-subscriber hardware validation is complete. This record
+does not create a patch tag or complete `v0.2`: the already planned repeated
+cold starts and idle observation remain. Multi-subscriber/load tests, longer
+timing and memory observations, and independent MPU validation retain their
+separate follow-up scope in [PROTECTED_ROADMAP.md](PROTECTED_ROADMAP.md).
