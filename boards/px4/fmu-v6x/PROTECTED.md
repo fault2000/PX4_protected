@@ -4,7 +4,8 @@
 protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
 another. Initial hardware startup and USB NSH access/reconnection have been confirmed;
-runtime stability and MPU isolation validation remain in progress.
+the basic protected HRT diagnostic has also passed twice on hardware.
+Sustained runtime stability and MPU isolation validation remain in progress.
 
 The source baseline is:
 
@@ -234,9 +235,9 @@ its terminal error result as one extra 32-byte page, explaining the displayed
 2,097,184-byte total. Treat this as a reporting issue and use Kmem/Umem for
 RAM observations; it does not indicate heap corruption.
 
-Repeated cold starts, heap trends, user work execution,
-HRT callbacks/cancellation, uORB notifications, and MPU isolation enforcement
-remain to be verified. The static artifact checker does not infer hardware
+Repeated cold starts, sustained heap trends, user work execution, uORB
+notifications, and MPU isolation enforcement remain to be verified. Basic
+HRT callback/cancellation results are recorded below. The static artifact checker does not infer hardware
 validation from source revision; its generated hardware flags remain false
 for locally built images.
 
@@ -349,5 +350,72 @@ check fails, save the full output and reboot before retrying; the failed
 session does not reuse its callback storage. Successful runs can be repeated
 to observe heap and stack trends. Active/pending replacement and callback
 self-cancel/rearm have host coverage but are not claimed as board-tested by
-this command. The new firmware and HRT checks still require hardware results;
-`v0.1` startup evidence does not automatically validate `v0.1.1`.
+this command. The following record confirms the command's basic hardware
+checks for `v0.1.1`; it does not establish all HRT behavior or the full `v0.2`
+work package.
+
+## First HRT hardware validation (2026-09-15)
+
+The user supplied two consecutive successful `hrt_smoke run` results over USB
+NSH. `ver all` reported PX4 commit
+`eafec6aa20642f5548bf82a9010a910b56e05981` (the corrected `v0.1.1` tag),
+NuttX commit `5ef31ffdf1a29202aca2c76c9727d663b49c0c51`, GCC 13.2.1, and build
+time `Sep 15 2026 16:36:06`. The board identified itself as FMUM `0x003` /
+BASE `0x005`. Both runs ended with `hrt_smoke: PASS all checks`.
+
+| Observation | Run 1 | Run 2 |
+| --- | ---: | ---: |
+| Command PID | 12 | 13 |
+| Callback PID | 7 | 7 |
+| Relative one-shot elapsed (us) | 100,014 | 100,014 |
+| Absolute-time rearm elapsed (us) | 100,009 | 100,008 |
+| One-shot after periodic cancellation (us) | 100,015 | 100,013 |
+| NULL-callback expiry observed (us) | 109,407 | 109,405 |
+| Periodic callbacks before cancellation | 5 | 5 |
+| Periodic interval min / max (us) | 99,999 / 100,000 | 100,000 / 100,000 |
+| Notifications delivered during run | 8 | 8 |
+| Pending notifications at end | 0 | 0 |
+| Peak pending notifications | 1 | 1 |
+| Coalesced notifications during run | 0 | 0 |
+
+The three one-shot callbacks and five periodic callbacks account for all
+eight deliveries per run; cumulative deliveries progressed `0 -> 8 -> 16`.
+Cancellation before expiry produced no callback, and periodic cancellation
+was followed by a 300 ms observation with no additional callback. The test
+also successfully reused the same entry after completion/cancellation. The
+`callback_pid=-1` / `CONTROL=0` output for the no-callback check is the initial
+record value, as expected when nothing executes.
+
+Executed callbacks reported `CONTROL=0x7` and `IPSR=0`; PID 7 matched `usr_hrt`
+in the subsequent `ps` output. CONTROL bits `nPRIV=1`, `SPSEL=1`, and `FPCA=1`
+indicate unprivileged execution using PSP with the floating-point context
+active. IPSR reads zero from unprivileged code and is not independent proof of
+privilege or MPU access enforcement. This verifies the basic kernel-timer to
+user-dispatcher callback path for the reported image.
+
+The one-shot observations were 8--15 us beyond the requested 100 ms. They
+include scheduling/API, syscall and dispatch overhead; they are not isolated
+interrupt-latency measurements. The NULL-callback result is the observation
+time from `hrt_called()` polling every 10 ms, not callback delay. The periodic
+range comes from four measured intervals in each run and is not a worst-case
+jitter bound under load.
+
+The `free` snapshots before and after both runs were identical:
+
+| Heap | Total (B) | Used (B) | Free (B) | Largest free (B) | nused | nfree |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Kernel | 245,408 | 36,560 | 208,848 | 207,920 | 165 | 2 |
+| User | 130,720 | 18,064 | 112,656 | 112,144 | 57 | 2 |
+
+There was no net heap growth over these two runs. `usr_hrt` used 420 of 960
+stack bytes (reported 43.7%), and `px4_entry` used 1,548 of 3,144 (49.2%). The
+two diagnostic tasks had exited by the final `ps` snapshot. This short test
+does not establish long-duration leak freedom or stack bounds for future
+callbacks.
+
+Hardware FIFO ordering across multiple timers, pending-event replacement,
+callback self-cancel/rearm, coalescing under backlog, and behavior under
+sustained load remain separate checks. The next implementation target is a
+user `ScheduledWorkItem` diagnostic that verifies actual worker execution,
+stop/restart and lifetime cleanup after HRT delivery. Its completion and the
+remaining uORB work are still required before `v0.2`.
