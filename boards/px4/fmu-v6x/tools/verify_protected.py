@@ -92,6 +92,15 @@ assert 'uorb_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
 assert 'uorb_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
 assert 'uorb_smoke_kernel_main' in (build / 'NuttX/px4_kernel.bdat').read_text()
 assert 'uorb_smoke_kernel_main' not in (build / 'NuttX/px4.bdat').read_text()
+assert 'uorb_wait_smoke_main' in us and 'uorb_wait_smoke_main' not in ks, 'uORB wait diagnostic must run in userspace'
+assert 'uorb_wait_kernel_main' in ks and 'uorb_wait_kernel_main' not in us, 'uORB wait observer must run in the kernel'
+assert 'uorb_wait_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
+assert 'uorb_wait_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
+assert 'uorb_wait_kernel_main' in (build / 'NuttX/px4_kernel.bdat').read_text()
+assert 'uorb_wait_kernel_main' not in (build / 'NuttX/px4.bdat').read_text()
+for symbol in ['uorb_wait_pollfd', 'uorb_wait_blocking_storage']:
+    assert symbol in us and symbol not in ks, 'Wait diagnostic storage must belong to userspace'
+    assert us['_sbss'] <= us[symbol] < us['_ebss'], 'Wait identity storage must reside in user BSS'
 
 # The kernel must use the protected allocator wrappers from libkmm. Linking
 # userspace libmm can make memalign use an uninitialized kernel g_mmheap copy.
@@ -125,7 +134,7 @@ assert 'g_mmheap' not in ks, 'Userspace heap pointer duplicated in kernel'
 assert us['_sbss'] <= us['g_mmheap'] < us['_ebss'], 'User heap pointer outside user BSS'
 
 report = {
-    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot, HRT, work queue and uORB diagnostic placement, uORB user dispatcher and kernel broker placement, separate kernel/user work queue archives and lock instructions, USB NSH configuration, kernel/user placement and allocator linkage',
+    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot, HRT, work queue, uORB and waiting-subscriber diagnostic placement, user BSS wait identity storage, uORB user dispatcher and kernel broker placement, separate kernel/user work queue archives and lock instructions, USB NSH configuration, kernel/user placement and allocator linkage',
     'board_id': fw['board_id'],
     'kernel_flash_bytes': kflash_end - 0x08020000,
     'user_flash_bytes': max(s['paddr'] + s['filesz'] for s in uloads if s['filesz']) - 0x08100000,
@@ -139,6 +148,7 @@ report = {
     'hrt_smoke_hardware_verified': False,
     'work_queue_smoke_hardware_verified': False,
     'uorb_smoke_hardware_verified': False,
+    'uorb_wait_smoke_hardware_verified': False,
 }
 print(json.dumps(report, indent=2))
 (build / 'protected-artifact-check.json').write_text(json.dumps(report, indent=2) + '\n')

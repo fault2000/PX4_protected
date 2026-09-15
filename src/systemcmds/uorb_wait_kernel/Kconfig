@@ -1,0 +1,8 @@
+menuconfig SYSTEMCMDS_UORB_WAIT_KERNEL
+	bool "uorb_wait_kernel"
+	default n
+	depends on BOARD_PROTECTED && PLATFORM_NUTTX && BOARD_ARCHITECTURE = "cortex-m7"
+	---help---
+		Fixed kernel observer and producer for uorb_wait_smoke.
+		Observes only the invoking task's normal semaphore wait and publishes
+		only sequential diagnostic samples on orb_test instance zero.

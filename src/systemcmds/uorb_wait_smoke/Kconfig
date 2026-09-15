@@ -1,0 +1,13 @@
+menuconfig SYSTEMCMDS_UORB_WAIT_SMOKE
+	bool "uorb_wait_smoke"
+	default n
+	depends on BOARD_PROTECTED && PLATFORM_NUTTX && BOARD_ARCHITECTURE = "cortex-m7"
+	---help---
+		Bounded protected uORB poll and blocking subscription wait checks.
+
+config USER_UORB_WAIT_SMOKE
+	bool
+	default y
+	depends on BOARD_PROTECTED && SYSTEMCMDS_UORB_WAIT_SMOKE
+	---help---
+		Run uorb_wait_smoke in userspace memory.

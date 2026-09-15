@@ -8,6 +8,8 @@ the basic protected HRT and user work queue diagnostics have also passed on hard
 The `v0.1.3` uORB diagnostic has passed three hardware runs, followed by HRT and
 work-queue regressions in the same image. Sleeping-subscriber wakeups, sustained
 runtime stability and MPU isolation validation remain in progress.
+The `v0.1.4` waiting-subscriber diagnostic is implemented; hardware results
+for that new image are pending.
 
 The source baseline is:
 
@@ -104,9 +106,10 @@ through `px4_entry`, then NSH runs `init/rc.protected` as
 and `work_queue status`; it does not run the normal flight startup script.
 
 Available diagnostics include `dmesg`, `hardfault_log`, `hrt_smoke`, `mft`, `mtd`, `param`,
-`perf`, `reboot`, `top`, `listener`, `uorb`, `uorb_smoke`, `ver`, `work_queue`,
+`perf`, `reboot`, `top`, `listener`, `uorb`, `uorb_smoke`, `uorb_wait_smoke`, `ver`, `work_queue`,
 `work_queue_smoke`, and the protected kernel-command launcher. The kernel-only
-`uorb_smoke_kernel` companion is invoked by `uorb_smoke`. Flight modules, PX4
+`uorb_smoke_kernel` companion is invoked by `uorb_smoke`, and `uorb_wait_kernel`
+by `uorb_wait_smoke`. Flight modules, PX4
 sensor/output drivers, Ethernet, Telnet and PX4 USB protocol autodetection
 are disabled. The `reboot` command
 runs in the kernel because FMUv6X reset lockout controls GPIO. The broad PX4
@@ -658,8 +661,9 @@ failure rather than waiting on an unregistered subscription. The protected user
 path also rechecks for an update while holding the condition mutex and the
 scheduler guard, then retains the guard through NuttX's condition wait. This
 closes the check-to-wait window within the same single-core contract. The
-current board diagnostic does not exercise a sleeping `SubscriptionBlocking`
-waiter, so its actual waiting behavior remains hardware-unverified.
+`v0.1.3` board diagnostic does not exercise a sleeping `SubscriptionBlocking`
+waiter. The new `v0.1.4` diagnostic below exercises that path, but its actual
+waiting behavior remains hardware-unverified.
 
 This change establishes a functional callback execution boundary. It does not
 provide individual user-module isolation, validate every syscall argument, or
@@ -906,9 +910,150 @@ Periodic intervals were 99,999--100,000 us; after restart they were
 `PASS cleanup worker_pid=45 exited` confirmed the diagnostic's own cleanup.
 The final heap observation is included above.
 
-Basic `v0.1.3` uORB validation is complete. The next bounded diagnostic should
-cover a subscriber already waiting in `poll()` or `SubscriptionBlocking`,
-finite timeout without publication, wake/read/re-wait cycles, and limited
-periodic publication with sequence/timestamp observations. Multi-subscriber
+Basic `v0.1.3` uORB validation is complete. The `v0.1.4` diagnostic below covers
+a subscriber already waiting in `poll()` or `SubscriptionBlocking`, finite
+timeout without publication, wake/read/re-wait cycles, and limited periodic
+publication with sequence/timestamp observations. Its hardware results are
+pending. Multi-subscriber
 load, long-duration operation, repeated startup and independent MPU validation
 remain separate items; this record does not complete the `v0.2` milestone.
+
+## Waiting-subscriber diagnostic (v0.1.4, no patch tag)
+
+`uorb_wait_smoke run` exercises four combinations: `poll()` and the production
+`SubscriptionBlocking<orb_test_s>`, each with a user producer and a kernel
+producer. The command task is the consumer; all data uses the existing
+`orb_test` instance 0. Run this command alone, without other diagnostics or
+publishers using that topic.
+
+The kernel-only `uorb_wait_kernel` helper uses the existing fixed builtin
+launcher. At session start it records the caller's PID; it accepts no target
+PID or executable address. The user supplies an aligned wait-identity object
+in user BSS, and the helper validates its full range against the userspace
+header. A short kernel critical section obtains the caller's TCB and compares
+`TSTATE_WAIT_SEM` and its actual `waitsem` with the specific API's semaphore:
+
+- For `poll()`, NuttX writes the semaphore pointer into the static `pollfd`.
+  The helper compares that pointer without dereferencing the semaphore.
+- For `SubscriptionBlocking`, a friend struct defined only in the diagnostic
+  obtains the private condition semaphore's identity. Its object uses aligned
+  static storage and runtime construction. The production wait and callback
+  implementations, class layout and public API remain unchanged.
+
+This comparison distinguishes the intended wait from an unrelated mutex or
+allocation wait during API setup. The helper reports observations and context,
+not kernel addresses. A new sequence is armed for each wait, so observations
+from earlier waits cannot satisfy later checks.
+
+For user production, a separate `uorb:usr_wait` task (requested stack 2,048 B,
+priority 90) confirms the exact wait through the helper immediately before
+ordinary uORB publication. The kernel `uorb:k_wait` task (requested stack
+2,048 B, priority 100) observes the wait in all cases and also publishes in
+kernel-producer cases. Each producer holds scheduling locked from the final
+wait check through publication and accounting; interrupts remain enabled.
+The command requests a 2,560-byte stack. Consumer and user producer check
+CONTROL.nPRIV=1, while the kernel task checks nPRIV=0.
+
+Each combination performs this finite sequence on the same subscription:
+
+| Sequence | Operation |
+| --- | --- |
+| 1 | No publication: observe the exact wait and require a 200 ms timeout |
+| 2--6 | Five samples at absolute 100 ms publication deadlines; observe a fresh wait, wake, copy and drain each sample |
+| 7 | Another no-publication 200 ms timeout after periodic delivery |
+| 8 | One final publication to verify reuse after that timeout |
+
+Each case requires eight exact wait observations and six matching samples.
+The full command therefore checks 32 waits and 24 samples. With no other user
+callbacks active, the two blocking cases normally add 12 uORB callback
+deliveries with no coalescing. Final registered and pending counts must return
+to their initial values.
+
+The timeout checks accept 180--500 ms of observed elapsed time; the current
+NuttX tick is 1 ms. Wake waits use a 1 s API timeout but must return within
+500 ms. That margin also rejects a publication arriving only after the timeout
+interrupt, which scheduler locking alone cannot rule out. Publication lateness
+is limited to 50 ms; exceeding that limit fails without shifting subsequent
+absolute deadlines. These generous limits are functional checks, not promised
+real-time performance.
+
+The command prints missing/old sequence counts, publication interval,
+publication lateness and publication-to-return latency ranges. `poll()` records
+return time before copying; `updateBlocking()` records return time after its
+internal copy. Those measurement points differ, so the values are not an
+isolated or directly comparable scheduler-latency benchmark. The observer's
+short sleeps control polling overhead and are not evidence that the consumer
+entered its intended wait.
+
+Cleanup stops and confirms exit of the user producer before stopping the
+kernel observer. On normal completion the helper retains its publisher until
+the consumer finishes, then unadvertises and confirms worker exit. Failure or
+session expiry can end publication before the consumer's finite wait returns.
+Only after safe exits are the
+subscription, condition object and user publisher released. Uncertain cleanup
+retains the static objects/handles and latches the command until reboot; no
+task is forcibly killed. Each observer/producer loop checks a 10-second active
+session deadline; cleanup/join has separate bounds. This is not a hard watchdog
+or a bound on the whole command's execution time.
+The helper's `released` result concerns unadvertising, not complete heap
+reclamation.
+
+The artifact checker also verifies both new builtin placements and the two
+wait-identity storage symbols in user BSS. Existing uORB broker host checks
+and HRT regressions remain separate from this diagnostic: they do not execute
+these real NuttX waits. The local GCC 14.2.1 full protected build and artifact
+checker passed, as did the existing seven broker and eight HRT host checks.
+No full flat or other-board build, or new hardware result, is claimed.
+
+| Pre-publication artifact measurement | Bytes |
+| --- | ---: |
+| Kernel flash image | 279,168 |
+| User flash image | 116,544 |
+| Combined binary, including flash gap | 1,034,048 |
+| Kernel static data | 61,432 |
+| User static reservation | 16,384 |
+
+These are local working-tree measurements; final Git metadata can change image
+sizes. The recorded GCC 13.2.1 `v0.1.3` hardware results do not establish the
+runtime behavior of this new diagnostic.
+
+### Pending hardware acceptance
+
+After building and uploading, collect this USB NSH sequence. The first run
+warms up persistent uORB/poll storage and reusable task resources; compare
+subsequent heap samples rather than requiring the initial allocation count
+to remain unchanged.
+
+```sh
+ver all
+free
+
+uorb_wait_smoke run
+sleep 2
+free
+
+uorb_wait_smoke run
+sleep 2
+free
+
+uorb_wait_smoke run
+sleep 2
+free
+
+ps
+
+uorb_smoke run
+hrt_smoke run
+work_queue_smoke run
+sleep 2
+free
+work_queue status
+ps
+```
+
+Require all four cases, observer/producer cleanup and the command to pass.
+Record per-case timings, exact-wait counts, callback counts, heap changes and
+remaining task stacks with the exact image hash and toolchain. Temporary
+`uorb:usr_wait` and `uorb:k_wait` tasks should be absent after cleanup;
+`usr_uorb` and `usr_hrt` remain. These checks do not replace multi-subscriber
+stress, sustained heap/timing observations or the remaining `v0.2` work.

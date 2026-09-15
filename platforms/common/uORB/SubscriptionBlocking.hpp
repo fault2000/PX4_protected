@@ -149,6 +149,10 @@ public:
 
 private:
 
+	// The protected wait diagnostic compares this condition's identity with
+	// the caller's actual NuttX wait semaphore. No public accessor is needed.
+	friend struct SubscriptionBlockingTestAccess;
+
 	pthread_mutex_t _mutex = PTHREAD_MUTEX_INITIALIZER;
 	pthread_cond_t	_cv = PTHREAD_COND_INITIALIZER;
 
