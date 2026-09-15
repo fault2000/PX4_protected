@@ -43,9 +43,13 @@
 
 #pragma once
 
+#include <px4_platform_common/px4_config.h>
+
 #include "mavlink_ftp.h"
 #include "mavlink_log_handler.h"
+#if defined(CONFIG_MAVLINK_MISSION)
 #include "mavlink_mission.h"
+#endif
 #include "mavlink_parameters.h"
 #include "MavlinkStatustextHandler.hpp"
 #include "mavlink_timesync.h"
@@ -253,7 +257,9 @@ private:
 
 	MavlinkFTP			_mavlink_ftp;
 	MavlinkLogHandler		_mavlink_log_handler;
+#if defined(CONFIG_MAVLINK_MISSION)
 	MavlinkMissionManager		_mission_manager;
+#endif
 	MavlinkParametersManager	_parameters_manager;
 	MavlinkTimesync			_mavlink_timesync;
 	MavlinkStatustextHandler	_mavlink_statustext_handler;

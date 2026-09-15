@@ -11,6 +11,15 @@ depends on MODULES_MAVLINK
 	---help---
 		Select the Mavlink dialect to generate and use.
 
+config MAVLINK_MISSION
+	bool "MAVLink mission protocol support"
+	default y
+	depends on MODULES_MAVLINK
+	---help---
+		Include the mission manager and its dataman client. Disable this for
+		communication-only configurations without a running dataman service.
+		Mission, fence and rally transfers are unavailable when disabled.
+
 menuconfig MAVLINK_UAVCAN_PARAMETERS
 depends on MODULES_MAVLINK && DRIVERS_UAVCAN
         bool "Mavlink UAVCAN parameter support"

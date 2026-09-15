@@ -74,6 +74,9 @@ dependencies installed:
 make px4_fmu-v6x_protected
 ```
 
+For the separate userspace MAVLink/UART configuration introduced after `v0.2`,
+see [PROTECTED_MAVLINK.md](PROTECTED_MAVLINK.md).
+
 The active target does not require `CMAKE_POLICY_VERSION_MINIMUM=3.5` with
 CMake 4. `CCACHE_DISABLE=1` can be used when the local compiler cache is not
 writable; it is not required by protected mode.
@@ -1060,7 +1063,7 @@ Record per-case timings, exact-wait counts, callback counts, heap changes and
 remaining task stacks with the exact image hash and toolchain. Temporary
 `uorb:usr_wait` and `uorb:k_wait` tasks should be absent after cleanup;
 `usr_uorb` and `usr_hrt` remain. These checks do not replace multi-subscriber
-stress, sustained heap/timing observations or the remaining `v0.2` work.
+stress or sustained heap/timing observations tracked as follow-up work.
 
 ### Waiting-subscriber hardware validation (2026-09-15)
 

@@ -6,7 +6,9 @@ import base64, hashlib, json, struct, subprocess, sys, zlib
 import re
 
 build = Path(sys.argv[1]).resolve()
-name = 'px4_fmu-v6x_protected'
+cache = (build / 'CMakeCache.txt').read_text()
+name = re.search(r'^PX4_CONFIG:STRING=(.+)$', cache, re.MULTILINE).group(1)
+assert name in ('px4_fmu-v6x_protected', 'px4_fmu-v6x_protected-mavlink'), name
 
 def inspect_elf(path):
     data = path.read_bytes()
@@ -78,6 +80,16 @@ assert 'reboot_main' in ks and 'reboot_main' not in us
 assert 'stm32_configgpio' in ks and 'stm32_configgpio' not in us
 assert 'nsh_consolemain' in us and 'nsh_consolemain' not in ks
 assert 'cdcacm_initialize' in ks and 'cdcacm_initialize' not in us
+if name == 'px4_fmu-v6x_protected-mavlink':
+    assert 'mavlink_main' in us and 'mavlink_main' not in ks, 'MAVLink must run in userspace'
+    assert 'mavlink_main' in (build / 'NuttX/px4.bdat').read_text()
+    assert 'mavlink_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
+    board_config = (build / 'boardconfig').read_text().splitlines()
+    assert 'CONFIG_USER_MAVLINK=y' in board_config
+    assert '# CONFIG_MAVLINK_MISSION is not set' in board_config
+    assert not any('MavlinkMissionManager' in symbol for symbol in us), 'Mission support is disabled'
+else:
+    assert 'mavlink_main' not in us and 'mavlink_main' not in ks
 assert 'nsh_usbconsole.c' in (build / (name + '.map')).read_text()
 assert 'hrt_smoke_main' in us and 'hrt_smoke_main' not in ks, 'HRT diagnostic must run in userspace'
 assert 'hrt_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
@@ -135,6 +147,8 @@ assert us['_sbss'] <= us['g_mmheap'] < us['_ebss'], 'User heap pointer outside u
 
 report = {
     'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot, HRT, work queue, uORB and waiting-subscriber diagnostic placement, user BSS wait identity storage, uORB user dispatcher and kernel broker placement, separate kernel/user work queue archives and lock instructions, USB NSH configuration, kernel/user placement and allocator linkage',
+    'target': name,
+    'mavlink_userspace_placement_checked': name == 'px4_fmu-v6x_protected-mavlink',
     'board_id': fw['board_id'],
     'kernel_flash_bytes': kflash_end - 0x08020000,
     'user_flash_bytes': max(s['paddr'] + s['filesz'] for s in uloads if s['filesz']) - 0x08100000,
@@ -149,6 +163,7 @@ report = {
     'work_queue_smoke_hardware_verified': False,
     'uorb_smoke_hardware_verified': False,
     'uorb_wait_smoke_hardware_verified': False,
+    'mavlink_hardware_verified': False,
 }
 print(json.dumps(report, indent=2))
 (build / 'protected-artifact-check.json').write_text(json.dumps(report, indent=2) + '\n')

@@ -96,6 +96,13 @@ target_include_directories(mavlink_c
 		${MAVLINK_LIBRARY_DIR}/${MAVLINK_DIALECT_UAVIONIX}
 )
 
+set(mavlink_mission_sources)
+set(mavlink_mission_dependencies)
+if(CONFIG_MAVLINK_MISSION)
+	list(APPEND mavlink_mission_sources mavlink_mission.cpp)
+	list(APPEND mavlink_mission_dependencies dataman_client)
+endif()
+
 px4_add_module(
 	MODULE modules__mavlink
 	MAIN mavlink
@@ -110,7 +117,7 @@ px4_add_module(
 		mavlink_log_handler.cpp
 		mavlink_main.cpp
 		mavlink_messages.cpp
-		mavlink_mission.cpp
+		${mavlink_mission_sources}
 		mavlink_parameters.cpp
 		mavlink_rate_limiter.cpp
 		mavlink_receiver.cpp
@@ -128,7 +135,7 @@ px4_add_module(
 		adsb
 		airspeed
 		component_general_json # for checksums.h
-		dataman_client
+		${mavlink_mission_dependencies}
 		drivers_accelerometer
 		drivers_gyroscope
 		drivers_magnetometer
