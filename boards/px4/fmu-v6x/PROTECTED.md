@@ -5,7 +5,9 @@ protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
 another. Initial hardware startup and USB NSH access/reconnection have been confirmed;
 the basic protected HRT and user work queue diagnostics have also passed on hardware.
-Sustained runtime stability and MPU isolation validation remain in progress.
+The `v0.1.3` uORB callback bridge and diagnostic build successfully; their hardware
+validation is pending. Sustained runtime stability and MPU isolation validation
+remain in progress.
 
 The source baseline is:
 
@@ -102,9 +104,11 @@ through `px4_entry`, then NSH runs `init/rc.protected` as
 and `work_queue status`; it does not run the normal flight startup script.
 
 Available diagnostics include `dmesg`, `hardfault_log`, `hrt_smoke`, `mft`, `mtd`, `param`,
-`perf`, `reboot`, `top`, `listener`, `uorb`, `ver`, `work_queue`, `work_queue_smoke`, and the protected
-kernel-command launcher. Flight modules, PX4 sensor/output drivers, Ethernet,
-Telnet and PX4 USB protocol autodetection are disabled. The `reboot` command
+`perf`, `reboot`, `top`, `listener`, `uorb`, `uorb_smoke`, `ver`, `work_queue`,
+`work_queue_smoke`, and the protected kernel-command launcher. The kernel-only
+`uorb_smoke_kernel` companion is invoked by `uorb_smoke`. Flight modules, PX4
+sensor/output drivers, Ethernet, Telnet and PX4 USB protocol autodetection
+are disabled. The `reboot` command
 runs in the kernel because FMUv6X reset lockout controls GPIO. The broad PX4
 `tests` command is not included.
 
@@ -422,8 +426,8 @@ callback self-cancel/rearm, coalescing under backlog, and behavior under
 sustained load remain separate checks. The following patch adds a user
 `ScheduledWorkItem` diagnostic for actual worker execution, stop/restart and
 lifetime cleanup after HRT delivery. The following hardware record covers its
-basic operation; sustained validation and the remaining uORB work are still
-required before `v0.2`.
+basic operation. Sustained validation and hardware acceptance of the uORB
+bridge described below are still required before `v0.2`.
 
 ## User work queue diagnostic (v0.1.2, no patch tag)
 
@@ -443,8 +447,8 @@ POSIX builds keep the original library and lock selection.
 The artifact checker rejects either archive appearing in the wrong ELF map
 and verifies scheduler calls in user `WorkQueue::Add()` and IRQ masking in
 the kernel implementation.
-This does not fix the separate uORB user-callback boundary described in the
-roadmap.
+That `v0.1.2` patch addressed queue locking and execution. The `v0.1.3` bridge
+described below separately routes uORB callbacks to the user dispatcher.
 
 `work_queue_smoke run` creates a dedicated user queue named `wq:usr_smoke` with
 a requested 2,048-byte stack and priority 205. It checks immediate execution,
@@ -587,5 +591,215 @@ observed +288 B / three kernel allocations when the extra user worker is
 introduced. The stable retained kernel allocation and the reversible user
 delta support these explanations; they are not evidence of a per-run leak.
 Long-duration, concurrent-worker and allocation-ownership checks remain
-outside this short record. Basic `v0.1.2` work queue validation is complete;
-the next implementation target is the uORB notification/callback boundary.
+outside this short record. Basic `v0.1.2` work queue validation is complete.
+The following `v0.1.3` implementation addresses the uORB notification/callback
+boundary; its new image still requires hardware validation.
+
+## Protected uORB callback boundary (v0.1.3, no patch tag)
+
+Protected user callback registration now sends an opaque integer token to a
+kernel broker; the user callback object and its virtual `call()` remain in the
+user domain. Publication stores the message and queues notifications in the
+kernel. The user `usr_uorb` task receives tokens, resolves them in its own
+registration table, and invokes user callbacks. Native kernel callbacks retain
+their synchronous kernel publication path. A user publication therefore no
+longer causes the kernel to invoke the user's callback object directly.
+
+There are 64 live user registration slots for this boot's shared user domain.
+The broker scans that fixed table on publication, does not allocate notification
+storage on the publish/interrupt path, and keeps pending registrations in FIFO
+order. Each registration can have at most one pending notification; further
+publications while pending increment the broker's coalesced counter without
+moving the registration's FIFO position. Registration fails when capacity is exhausted. Tokens are not
+reused during the boot, preventing an old notification from resolving to an
+unrelated replacement object.
+
+Notification coalescing is separate from each topic's message queue. A callback
+is a request to inspect available data, not one callback guaranteed for every
+publication. Topic queue depth and subscription generation still determine
+which samples can be read. A depth-one topic yields its latest sample after a
+burst; a queued topic must be drained through its normal subscription API.
+`SubscriptionCallbackWorkItem` keeps its existing interface and schedules work
+from `usr_uorb`, with the actual `Run()` on the user's selected work queue.
+
+`usr_uorb` is started with the user uORB manager, requests a 1,536-byte stack,
+and has priority 254. It persists for the boot, including when no callbacks
+are registered. The user manager's `terminate()` returns false with `EBUSY`
+once this service is started; there is no asynchronous dispatcher teardown.
+`ps` should therefore retain `usr_uorb` after a successful smoke run.
+
+### Callback and ownership contract
+
+The dispatcher locks scheduling before waiting for a notification and retains
+the lock through the short callback. NuttX permits other tasks to run while
+the wait blocks and restores that task's lock state when it resumes. User
+registration/state changes use the same nested scheduler exclusion; interrupts
+remain enabled. This contract requires one CPU and normal user task context.
+Callbacks must not allocate, sleep, print, wait for locks or perform blocking
+I/O. Asynchronous signal handlers and SMP are outside this contract.
+
+Unregister removes the user mapping and pending kernel notification. With the
+single-core, nonblocking callback contract, an owner can then release callback
+resources without racing an already dispatched callback. Self-unregister is
+supported. Owners must unregister explicitly **before** destruction of derived
+resources or the associated work item, and separately quiesce queued/in-flight
+work before destroying it; `ScheduleClear()` alone is not that completion
+barrier. The base callback destructor runs too late to protect resources
+already destroyed by a derived destructor.
+
+`SubscriptionCallback::unsubscribe()` now unregisters before unsubscribing,
+and instance changes are serialized with callback state. The inherited
+`SubscriptionInterval::unsubscribe()` is nonvirtual: calling it through a base
+reference bypasses the callback-aware method. Such callers must explicitly
+unregister first. Concurrent ownership changes still require one owner.
+
+`SubscriptionBlocking::updatedBlocking()` now handles callback registration
+failure rather than waiting on an unregistered subscription. The protected user
+path also rechecks for an update while holding the condition mutex and the
+scheduler guard, then retains the guard through NuttX's condition wait. This
+closes the check-to-wait window within the same single-core contract. The
+current board diagnostic does not exercise a sleeping `SubscriptionBlocking`
+waiter, so its actual waiting behavior remains hardware-unverified.
+
+This change establishes a functional callback execution boundary. It does not
+provide individual user-module isolation, validate every syscall argument, or
+prove MPU access enforcement or a complete security boundary.
+
+### uORB diagnostic and local validation
+
+`uorb_smoke run` uses only the existing diagnostic topics `orb_test` and
+`orb_multitest`, instance 0. Run it without another publisher on these topics.
+It checks subscribe/copy, `poll()` readiness after a publication, then the
+absence of readiness after copying that sample. This is **not** a test of
+waking a subscriber already asleep inside `poll()` or `SubscriptionBlocking`.
+
+The direct callback checks user PID/CONTROL and copied data, pending
+unregister before dispatch, re-registration, an eight-publication burst with
+one delivery and the latest value, and self-unregister. The burst holds the
+single-core scheduler lock around ordinary publication to make the pending
+state deterministic. It also traces the production
+`SubscriptionCallbackWorkItem::call()` into a private `wq:uorb_smoke` user
+worker, verifies actual `Run()` data/context, then verifies no further callback
+or data run after unregister. Final cleanup detaches on that worker and waits
+for its PID to disappear before deleting its work item.
+
+The command invokes the fixed `uorb_smoke_kernel run` builtin through the
+existing kernel launcher. That companion spawns an actual `uorb:k_smoke` kernel
+thread; the launch ioctl's caller alone would not establish a separate kernel
+producer task. The helper reads a fixed user request from `orb_multitest`,
+registers a native kernel callback, publishes a fixed reply, validates the
+native callback and copied reply, unregisters, and waits for kernel worker exit.
+Together the sequence covers these basic paths:
+
+| Direction | Diagnostic evidence required |
+| --- | --- |
+| User -> user | User publication read by user subscription/callback; user callback schedules a user work item |
+| User -> kernel | Actual kernel worker copies the user's fixed request |
+| Kernel -> kernel | Kernel publication invokes its native callback in the kernel worker's PID with `CONTROL.nPRIV=0` |
+| Kernel -> user | User dispatcher copies the kernel worker's fixed reply with `CONTROL.nPRIV=1` |
+
+The direct user callback uses `copy()` to read retained topic data, allowing
+reply delivery after the helper unadvertises. `SubscriptionInterval::update()`
+checks whether the topic is advertised, so it can reject such a final retained
+sample; the diagnostic does not change or promise different semantics for that
+API. Unprivileged `IPSR` reads zero and is not independent privilege evidence.
+These short checks do not establish timing bounds or access-denial behavior.
+
+A successful isolated run normally reports `delivered_delta=7` and
+`coalesced_delta=7` for user notifications. The four direct callbacks, one
+work-item callback, and request/reply callbacks account for the seven
+deliveries. Registered and pending counts must return to their starting values;
+peak pending and delivery/coalescing statistics are cumulative for the boot.
+`wq:uorb_smoke` and `uorb:k_smoke` must exit; `usr_uorb` stays alive. A failed
+check latches the diagnostic session and retains uncertain callback/work-item
+storage. Save its full output and reboot before retrying after a failure.
+
+The local GCC 14.2.1 protected firmware build and static artifact checker
+passed. The checker verifies user placement of the dispatcher and `uorb_smoke`,
+kernel placement of the broker and companion, and the existing image layout,
+work-queue linkage, USB and allocator checks. Seven deterministic broker host
+checks and the existing eight HRT host checks passed:
+
+```sh
+python3 platforms/common/uORB/test/protected_callbacks/run_host_tests.py
+python3 platforms/nuttx/src/px4/common/tests/run_hrt_host_tests.py
+python3 boards/px4/fmu-v6x/tools/verify_protected.py build/px4_fmu-v6x_protected
+```
+
+The broker checks cover FIFO/multiple registrations, coalescing, pending
+unregister, stale wakeups, slot reuse, full capacity and token identity. They
+compile production broker code with modeled semaphore/critical-section entry
+points; they do not execute the user dispatcher or real ARM/NuttX scheduling.
+See the [broker host test notes](../../../platforms/common/uORB/test/protected_callbacks/README.md).
+No full flat or other-board firmware build is claimed.
+
+| Pre-publication artifact measurement | Bytes |
+| --- | ---: |
+| Kernel flash image | 275,552 |
+| User flash image | 111,072 |
+| Combined binary, including flash gap | 1,028,576 |
+| Kernel static data | 61,296 |
+| User static reservation | 16,384 |
+
+These are working-tree build measurements; later source or Git-version
+metadata changes can affect image sizes. Hardware verification remains
+pending for this image. Earlier `v0.1.1`/`v0.1.2` board results remain evidence
+for their recorded firmware commits, not for the new dispatcher.
+
+### Pending hardware acceptance
+
+Build and upload the new image, then record `ver all` and the complete USB NSH
+output. Use the first uORB run as warm-up before comparing repeated samples:
+
+```sh
+ver all
+
+free
+
+uorb_smoke run
+
+sleep 2
+
+free
+
+uorb_smoke run
+
+sleep 2
+
+free
+
+uorb_smoke run
+
+sleep 2
+
+free
+
+work_queue status
+
+ps
+
+hrt_smoke run
+
+work_queue_smoke run
+
+sleep 2
+
+free
+
+work_queue status
+
+ps
+```
+
+Require `PASS all checks` for each diagnostic and successful user/kernel worker
+cleanup. Compare callback PID with `usr_uorb` in `ps`, and record stack usage
+for that persistent dispatcher. The first use creates two persistent uORB
+nodes/buffers, and NuttX can retain task-exit stacks for deferred reclamation
+or reuse signal-pool allocations, as in the earlier work-queue observations.
+Compare warmed-up repetitions and subsequent HRT/work-queue snapshots rather
+than equating an immediate heap difference with a leak. A sleep alone is not
+guaranteed to drain deferred frees. Record whether any increase accumulates.
+
+Basic uORB hardware acceptance, a real sleeping-subscriber wake check,
+concurrent-topic/load behavior, sustained heap trends, and independent MPU
+validation remain follow-up work. The `v0.2` milestone has not been reached.

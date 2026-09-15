@@ -1,0 +1,13 @@
+menuconfig SYSTEMCMDS_UORB_SMOKE
+	bool "uorb_smoke"
+	default n
+	depends on BOARD_PROTECTED && PLATFORM_NUTTX && BOARD_ARCHITECTURE = "cortex-m7"
+	---help---
+		Bounded protected uORB copy, poll, callback and user work queue checks.
+
+config USER_UORB_SMOKE
+	bool
+	default y
+	depends on BOARD_PROTECTED && SYSTEMCMDS_UORB_SMOKE
+	---help---
+		Run uorb_smoke in userspace memory.

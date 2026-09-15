@@ -42,8 +42,36 @@
 #include <containers/List.hpp>
 #include <px4_platform_common/px4_work_queue/WorkItem.hpp>
 
+#if defined(__PX4_NUTTX) && !defined(CONFIG_BUILD_FLAT) && !defined(__KERNEL__)
+#include <sched.h>
+#endif
+
 namespace uORB
 {
+
+namespace detail
+{
+class CallbackStateLock
+{
+public:
+	CallbackStateLock()
+	{
+#if defined(__PX4_NUTTX) && !defined(CONFIG_BUILD_FLAT) && !defined(__KERNEL__)
+		sched_lock();
+#endif
+	}
+
+	~CallbackStateLock()
+	{
+#if defined(__PX4_NUTTX) && !defined(CONFIG_BUILD_FLAT) && !defined(__KERNEL__)
+		sched_unlock();
+#endif
+	}
+
+	CallbackStateLock(const CallbackStateLock &) = delete;
+	CallbackStateLock &operator=(const CallbackStateLock &) = delete;
+};
+} // namespace detail
 
 // Subscription wrapper class with callbacks on new publications
 class SubscriptionCallback : public SubscriptionInterval, public ListNode<SubscriptionCallback *>
@@ -68,6 +96,9 @@ public:
 
 	bool registerCallback()
 	{
+		// Publish _registered before a newly notified user dispatcher can run.
+		detail::CallbackStateLock guard;
+
 		if (!_registered) {
 			if (_subscription.get_node() && Manager::register_callback(_subscription.get_node(), this)) {
 				// registered
@@ -93,11 +124,20 @@ public:
 
 	void unregisterCallback()
 	{
+		detail::CallbackStateLock guard;
+
 		if (_subscription.get_node()) {
 			Manager::unregister_callback(_subscription.get_node(), this);
 		}
 
 		_registered = false;
+	}
+
+	void unsubscribe()
+	{
+		detail::CallbackStateLock guard;
+		unregisterCallback();
+		SubscriptionInterval::unsubscribe();
 	}
 
 	/**
@@ -106,6 +146,7 @@ public:
 	 */
 	bool ChangeInstance(uint8_t instance)
 	{
+		detail::CallbackStateLock guard;
 		bool ret = false;
 
 		if (instance != get_instance()) {
@@ -131,6 +172,12 @@ public:
 		return ret;
 	}
 
+	// Protected user callbacks run on usr_uorb, with scheduling locked on one
+	// CPU. Keep call() short and nonblocking: no allocation, sleep or printing.
+	// Self-unregister is allowed. Owners must unregister before destroying any
+	// derived resources or the associated WorkItem, then quiesce that work.
+	// Registration/lifetime changes require one owner; signal handlers are not
+	// supported. Notifications coalesce; read messages via the topic queue.
 	virtual void call() = 0;
 
 	bool registered() const { return _registered; }
@@ -158,7 +205,7 @@ public:
 	{
 	}
 
-	virtual ~SubscriptionCallbackWorkItem() = default;
+	virtual ~SubscriptionCallbackWorkItem() { unregisterCallback(); }
 
 	void call() override
 	{

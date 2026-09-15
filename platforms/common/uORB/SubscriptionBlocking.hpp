@@ -60,6 +60,7 @@ public:
 
 	virtual ~SubscriptionBlocking()
 	{
+		unregisterCallback();
 		pthread_mutex_destroy(&_mutex);
 		pthread_cond_destroy(&_cv);
 	}
@@ -80,8 +81,9 @@ public:
 	 */
 	bool updatedBlocking(uint32_t timeout_us = 0)
 	{
-		if (!_registered) {
-			registerCallback();
+		if (!_registered && !registerCallback()) {
+			// A failed registration cannot wake an indefinite condition wait.
+			return false;
 		}
 
 		if (updated()) {
@@ -92,6 +94,15 @@ public:
 			// otherwise wait
 
 			LockGuard lg{_mutex};
+			detail::CallbackStateLock callback_guard;
+
+			// A publication may have arrived before the mutex was acquired.
+			// In protected userspace, keep the dispatcher excluded between this
+			// recheck and the condition wait. NuttX preserves the nested task
+			// scheduler lock while blocking, allowing usr_uorb to signal us.
+			if (updated()) {
+				return true;
+			}
 
 			if (timeout_us == 0) {
 				// wait with no timeout

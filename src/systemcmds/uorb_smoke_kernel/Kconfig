@@ -1,0 +1,7 @@
+menuconfig SYSTEMCMDS_UORB_SMOKE_KERNEL
+	bool "uorb_smoke_kernel"
+	default n
+	depends on BOARD_PROTECTED && PLATFORM_NUTTX && BOARD_ARCHITECTURE = "cortex-m7"
+	---help---
+		Kernel companion for the fixed uorb_smoke topic round-trip check.
+		Invoked through the existing kernel builtin launcher; not a user app.

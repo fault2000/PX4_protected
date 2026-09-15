@@ -200,6 +200,12 @@ uORB::DeviceNode::write(cdev::file_t *filp, const char *buffer, size_t buflen)
 	/* Mark at least one data has been published */
 	_data_valid = true;
 
+#if defined(__PX4_NUTTX) && !defined(CONFIG_BUILD_FLAT) && defined(__KERNEL__)
+	// User callbacks receive only an opaque notification. Their virtual call
+	// runs later in the user dispatcher, after this atomic publish completes.
+	UserCallback::notify(this);
+#endif
+
 	ATOMIC_LEAVE;
 
 	/* notify any poll waiters */

@@ -78,6 +78,7 @@ if (NOT DEFINED CONFIG_BUILD_FLAT AND "${PX4_PLATFORM}" MATCHES "nuttx")
 	px4_add_library(uORB_kernel
 		${SRCS_COMMON}
 		${SRCS_KERNEL}
+		uORBUserCallback.cpp
 		)
 	# Protected allocator wrappers obtain the user heap through USERSPACE.
 	target_link_libraries(uORB_kernel PRIVATE cdev uorb_msgs nuttx_kmm heatshrink)

@@ -85,6 +85,13 @@ assert 'hrt_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
 assert 'work_queue_smoke_main' in us and 'work_queue_smoke_main' not in ks, 'Work queue diagnostic must run in userspace'
 assert 'work_queue_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
 assert 'work_queue_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
+assert 'uorb_smoke_main' in us and 'uorb_smoke_main' not in ks, 'uORB diagnostic must run in userspace'
+assert 'uorb_user_callback_dispatch' in us and 'uorb_user_callback_dispatch' not in ks, 'uORB dispatcher must run in userspace'
+assert 'uorb_smoke_kernel_main' in ks and 'uorb_smoke_kernel_main' not in us, 'uORB companion must run in the kernel'
+assert 'uorb_smoke_main' in (build / 'NuttX/px4.bdat').read_text()
+assert 'uorb_smoke_main' not in (build / 'NuttX/px4_kernel.bdat').read_text()
+assert 'uorb_smoke_kernel_main' in (build / 'NuttX/px4_kernel.bdat').read_text()
+assert 'uorb_smoke_kernel_main' not in (build / 'NuttX/px4.bdat').read_text()
 
 # The kernel must use the protected allocator wrappers from libkmm. Linking
 # userspace libmm can make memalign use an uninitialized kernel g_mmheap copy.
@@ -96,6 +103,8 @@ assert 'libpx4_work_queue.a' not in kernel_map, 'Userspace work queue archive li
 assert 'libpx4_work_queue_kernel.a(WorkQueue.cpp.obj)' in kernel_map, 'Kernel work queue archive missing'
 assert 'libpx4_work_queue_kernel.a' not in user_map, 'Kernel work queue archive linked into userspace'
 assert 'libpx4_work_queue.a(WorkQueue.cpp.obj)' in user_map, 'Userspace work queue archive missing'
+assert 'libuORB_kernel.a(uORBUserCallback.cpp.obj)' in kernel_map, 'Kernel uORB notification broker missing'
+assert 'uORBUserCallback.cpp.obj' not in user_map, 'Kernel uORB broker linked into userspace'
 
 # Check the actual lock implementation in the two linked images, not just the
 # archive names: protected user code must not attempt privileged IRQ masking.
@@ -116,7 +125,7 @@ assert 'g_mmheap' not in ks, 'Userspace heap pointer duplicated in kernel'
 assert us['_sbss'] <= us['g_mmheap'] < us['_ebss'], 'User heap pointer outside user BSS'
 
 report = {
-    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot, HRT and work queue diagnostic placement, separate kernel/user work queue archives and lock instructions, USB NSH configuration, kernel/user placement and allocator linkage',
+    'checks': 'PASS: ARM ELF, load ranges, static RAM bounds, userspace header, reset vectors, binary padding, PX4 payload, protected configuration, builtin tables, reboot, HRT, work queue and uORB diagnostic placement, uORB user dispatcher and kernel broker placement, separate kernel/user work queue archives and lock instructions, USB NSH configuration, kernel/user placement and allocator linkage',
     'board_id': fw['board_id'],
     'kernel_flash_bytes': kflash_end - 0x08020000,
     'user_flash_bytes': max(s['paddr'] + s['filesz'] for s in uloads if s['filesz']) - 0x08100000,
@@ -129,6 +138,7 @@ report = {
     'usb_console_hardware_verified': False,
     'hrt_smoke_hardware_verified': False,
     'work_queue_smoke_hardware_verified': False,
+    'uorb_smoke_hardware_verified': False,
 }
 print(json.dumps(report, indent=2))
 (build / 'protected-artifact-check.json').write_text(json.dumps(report, indent=2) + '\n')

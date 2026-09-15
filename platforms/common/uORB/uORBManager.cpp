@@ -61,6 +61,10 @@ bool uORB::Manager::initialize()
 	}
 
 #if defined(__PX4_NUTTX) && !defined(CONFIG_BUILD_FLAT) && defined(__KERNEL__)
+	if (!_Instance || !UserCallback::initialize()) {
+		return false;
+	}
+
 	px4_register_boardct_ioctl(_ORBIOCDEVBASE, orb_ioctl);
 #endif
 	return _Instance != nullptr;
@@ -187,14 +191,32 @@ int	uORB::Manager::orb_ioctl(unsigned int cmd, unsigned long arg)
 
 	case ORBIOCDEVREGCALLBACK: {
 			orbiocdevregcallback_t *data = (orbiocdevregcallback_t *)arg;
-			data->registered = uORB::Manager::register_callback(data->handle, data->callback_sub);
+
+			if (!data) {
+				return -EINVAL;
+			}
+
+			data->registered = UserCallback::register_callback(data->handle, data->token);
 		}
 		break;
 
 	case ORBIOCDEVUNREGCALLBACK: {
 			orbiocdevunregcallback_t *data = (orbiocdevunregcallback_t *)arg;
-			uORB::Manager::unregister_callback(data->handle, data->callback_sub);
+
+			if (!data) {
+				return -EINVAL;
+			}
+
+			data->ret = UserCallback::unregister_callback(data->handle, data->token);
 		}
+		break;
+
+	case ORBIOCDEVWAITCALLBACK:
+		ret = UserCallback::wait_callback(reinterpret_cast<orbiocdevwaitcallback_t *>(arg));
+		break;
+
+	case ORBIOCDEVCALLBACKSTATUS:
+		ret = UserCallback::get_status(reinterpret_cast<orbiocdevcallbackstatus_t *>(arg));
 		break;
 
 	case ORBIOCDEVGETINSTANCE: {

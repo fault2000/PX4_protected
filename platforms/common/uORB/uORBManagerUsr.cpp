@@ -41,10 +41,115 @@
 #include <px4_platform_common/tasks.h>
 
 #include <sys/boardctl.h>
+#include <errno.h>
+#include <sched.h>
+#include <px4_platform_common/time.h>
 
 #include "uORBDeviceNode.hpp"
 #include "uORBUtils.hpp"
 #include "uORBManager.hpp"
+#include "SubscriptionCallback.hpp"
+
+#if defined(CONFIG_SMP)
+#error "Protected user uORB callbacks require a single-core scheduler"
+#endif
+
+namespace
+{
+
+struct UserCallbackEntry {
+	void *node{nullptr};
+	uORB::SubscriptionCallback *callback{nullptr};
+	uint32_t token{0};
+};
+
+UserCallbackEntry user_callbacks[ORB_USER_CALLBACK_CAPACITY] {};
+uint32_t last_callback_token{0};
+px4_task_t callback_task{-1};
+bool callback_task_starting{false};
+unsigned callback_api_errors{0};
+int callback_api_errno{0};
+
+void record_callback_error(int error)
+{
+	// Registration APIs may run inside a callback. Print only after dispatch
+	// releases its outer scheduler lock; console output can block.
+	++callback_api_errors;
+	callback_api_errno = error;
+}
+
+} // namespace
+
+// A distinct symbol also lets the artifact checker verify user placement.
+extern "C" int uorb_user_callback_dispatch(int, char **)
+{
+	for (;;) {
+		orbiocdevwaitcallback_t event {};
+		// NuttX preserves the nested task scheduler lock across a blocking
+		// syscall. Once an event returns, another user task cannot unregister
+		// its callback until the short, nonblocking call() has finished.
+		sched_lock();
+		const int ret = boardctl(ORBIOCDEVWAITCALLBACK, reinterpret_cast<unsigned long>(&event));
+		const int wait_errno = errno;
+
+		if (ret == 0 && event.token != 0) {
+			for (auto &entry : user_callbacks) {
+				if (entry.token == event.token) {
+					uORB::SubscriptionCallback *callback = entry.callback;
+					callback->call();
+					// Self-unregister is allowed. Do not access the callback or
+					// its map entry after call(), even for accounting.
+					break;
+				}
+			}
+		}
+
+		const unsigned errors = callback_api_errors;
+		const int api_errno = callback_api_errno;
+		callback_api_errors = 0;
+		sched_unlock();
+
+		if (errors) {
+			PX4_ERR("user callback API errors=%u last_errno=%d", errors, api_errno);
+		}
+
+		if (ret < 0 && wait_errno != EINTR) {
+			PX4_ERR("user callback wait failed (%d)", wait_errno);
+			px4_usleep(100000);
+		}
+	}
+
+	return 0;
+}
+
+namespace
+{
+
+bool start_callback_dispatcher()
+{
+	sched_lock();
+
+	if (callback_task >= 0) {
+		sched_unlock();
+		return true;
+	}
+
+	if (callback_task_starting) {
+		sched_unlock();
+		errno = EBUSY;
+		return false;
+	}
+
+	callback_task_starting = true;
+	callback_task = px4_task_spawn_cmd("usr_uorb", SCHED_DEFAULT, SCHED_PRIORITY_MAX - 1, 1536,
+					   uorb_user_callback_dispatch, nullptr);
+	callback_task_starting = false;
+	const bool started = callback_task >= 0;
+	sched_unlock();
+	return started;
+}
+
+} // namespace
 
 uORB::Manager *uORB::Manager::_Instance = nullptr;
 
@@ -54,11 +159,18 @@ bool uORB::Manager::initialize()
 		_Instance = new uORB::Manager();
 	}
 
-	return _Instance != nullptr;
+	return _Instance != nullptr && start_callback_dispatcher();
 }
 
 bool uORB::Manager::terminate()
 {
+	// The callback service lives for this boot. Do not asynchronously kill a
+	// dispatcher that may be in a callback or a kernel notification wait.
+	if (callback_task >= 0 || callback_task_starting) {
+		errno = EBUSY;
+		return false;
+	}
+
 	if (_Instance != nullptr) {
 		delete _Instance;
 		_Instance = nullptr;
@@ -304,16 +416,70 @@ bool uORB::Manager::orb_data_copy(void *node_handle, void *dst, unsigned &genera
 
 bool uORB::Manager::register_callback(void *node_handle, SubscriptionCallback *callback_sub)
 {
-	orbiocdevregcallback_t data = {node_handle, callback_sub, false};
-	boardctl(ORBIOCDEVREGCALLBACK, reinterpret_cast<unsigned long>(&data));
+	detail::CallbackStateLock guard;
 
-	return data.registered;
+	if (!node_handle || !callback_sub || callback_task < 0) {
+		errno = EINVAL;
+		return false;
+	}
+
+	UserCallbackEntry *available = nullptr;
+
+	for (auto &entry : user_callbacks) {
+		if (entry.callback == callback_sub) {
+			return entry.node == node_handle;
+		}
+
+		if (!entry.callback && !available) {
+			available = &entry;
+		}
+	}
+
+	if (!available || last_callback_token == UINT32_MAX) {
+		errno = available ? EOVERFLOW : ENOSPC;
+		return false;
+	}
+
+	// Never recycle token values, even after a failed registration. A late
+	// token can never refer to a new callback reusing an old object address.
+	const uint32_t token = ++last_callback_token;
+	orbiocdevregcallback_t data = {node_handle, token, false};
+	const int ret = boardctl(ORBIOCDEVREGCALLBACK, reinterpret_cast<unsigned long>(&data));
+
+	if (ret != 0 || !data.registered) {
+		if (ret == 0) {
+			// The transport succeeded, but the kernel rejected registration.
+			errno = EIO;
+		}
+
+		record_callback_error(errno);
+		return false;
+	}
+
+	*available = {node_handle, callback_sub, token};
+
+	return true;
 }
 
 void uORB::Manager::unregister_callback(void *node_handle, SubscriptionCallback *callback_sub)
 {
-	orbiocdevunregcallback_t data = {node_handle, callback_sub};
-	boardctl(ORBIOCDEVUNREGCALLBACK, reinterpret_cast<unsigned long>(&data));
+	detail::CallbackStateLock guard;
+
+	for (auto &entry : user_callbacks) {
+		if (entry.callback == callback_sub && entry.node == node_handle) {
+			orbiocdevunregcallback_t data = {entry.node, entry.token, PX4_ERROR};
+			// Drop the user mapping first. Even if the syscall fails, a stale
+			// kernel notification cannot call an object whose lifetime ended.
+			entry = {};
+			const int ret = boardctl(ORBIOCDEVUNREGCALLBACK, reinterpret_cast<unsigned long>(&data));
+
+			if (ret != 0 || data.ret != 0) {
+				record_callback_error(ret != 0 ? errno : -data.ret);
+			}
+
+			return;
+		}
+	}
 }
 
 uint8_t uORB::Manager::orb_get_instance(const void *node_handle)

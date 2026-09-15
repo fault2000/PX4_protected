@@ -42,6 +42,8 @@
 #include <stdint.h>
 #include <px4_platform_common/px4_config.h>
 
+#include "uORBUserCallback.hpp"
+
 #ifdef CONFIG_ORB_COMMUNICATOR
 #include "ORBSet.hpp"
 #include "uORBCommunicator.hpp"
@@ -118,14 +120,15 @@ typedef struct {
 #define ORBIOCDEVREGCALLBACK	_ORBIOCDEV(38)
 typedef struct {
 	void *handle;
-	class uORB::SubscriptionCallback *callback_sub;
+	uint32_t token;
 	bool registered;
 } orbiocdevregcallback_t;
 
 #define ORBIOCDEVUNREGCALLBACK	_ORBIOCDEV(39)
 typedef struct {
 	void *handle;
-	class uORB::SubscriptionCallback *callback_sub;
+	uint32_t token;
+	int ret;
 } orbiocdevunregcallback_t;
 
 #define ORBIOCDEVGETINSTANCE	_ORBIOCDEV(40)
@@ -152,6 +155,9 @@ typedef enum {
 	ORB_DEVMASTER_TOP = 1
 } orbiocdevmastercmd_t;
 #define ORBIOCDEVMASTERCMD	_ORBIOCDEV(45)
+
+#define ORBIOCDEVWAITCALLBACK	_ORBIOCDEV(46)
+#define ORBIOCDEVCALLBACKSTATUS	_ORBIOCDEV(47)
 
 
 /**
