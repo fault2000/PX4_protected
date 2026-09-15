@@ -3,8 +3,8 @@
 `px4_fmu-v6x_protected` is a minimal STM32H753II firmware target using NuttX
 protected mode and the MPU to separate kernel and user memory. It does not
 include the full PX4 flight stack or isolate individual user modules from one
-another. Successful hardware startup and MPU behavior have not yet been
-validated; see the startup BusFault corrections below.
+another. Initial hardware startup and USB NSH access have been confirmed;
+runtime stability and MPU isolation validation remain in progress.
 
 The source baseline is:
 
@@ -27,6 +27,21 @@ from upstream because this repository starts a new history at that release.
 Original licenses and copyright notices are retained. The initial two
 follow-up commits separate protected-mode bring-up from USB NSH support. Inspect
 those changes with `git diff v1.17.0..main`.
+
+Research milestones use separate project tags: `v0.1` records the initial
+hardware bring-up, `v0.1.1`, `v0.1.2`, etc. identify follow-up patches, and
+`v0.2` marks completion and validation of the next work package. See
+[PROTECTED_ROADMAP.md](PROTECTED_ROADMAP.md) for the scope and versioning rules.
+The PX4 numeric firmware version remains based on `v1.17.0`; version generation
+excludes project tags matching `v0.*`. Firmware package identity may still
+include the project tag and always records the source commit.
+
+The `v0.1` hardware evidence comes from commit `03ca855b52`, documented below.
+The milestone also includes the validation record, roadmap, and build-version
+selection needed to support project tags; it introduces no HRT or uORB runtime
+changes beyond that tested commit. A tag fixes the source and submodule commits,
+but does not automatically archive generated firmware or the exact ELF used on
+the board.
 
 For a new checkout:
 
@@ -106,8 +121,8 @@ screen /dev/ttyACM0 115200
 Use the actual device name assigned by the host. Press Enter three times to
 start the session; this NuttX version waits for three consecutive CR or LF
 characters before displaying `nsh>`. The USB frontend retries sessions after
-disconnects, but enumeration and reconnect behavior still require hardware
-validation.
+disconnects. Initial enumeration and shell entry have been confirmed on
+Windows; reconnect behavior still requires hardware validation.
 
 Useful initial checks at the prompt are:
 
@@ -161,12 +176,62 @@ and the user-space heap pointer. It rejected the pre-fix image and passed on
 the corrected image; disassembly also confirmed the corrected heap lookup.
 
 The target with both corrections built with GCC 14.2.1 on 2026-09-15 and passed
-the static artifact checks below. Hardware startup after the allocator fix is
-still unverified. Preserve the original ELF and UART log, then capture a fresh
-power-on log at 57600 baud and check that startup reaches USB NSH. After connecting to USB
-and pressing Enter three times, run `ver all`, `free`, `ps`, `work_queue status`
-and `dmesg`. Successful startup is the next acceptance gate; it does not complete
-the remaining protected-mode validation.
+the static artifact checks below.
+
+## First hardware startup and USB shell confirmation (2026-09-15)
+
+The user-built GCC 13.2.1 image reported PX4 commit
+`03ca855b52ed8a21fde2ed82e565802c55d3bc10` and NuttX commit
+`5ef31ffdf1a29202aca2c76c9727d663b49c0c51`. On the board identifying itself as
+FMUM `0x003` / BASE `0x005`, the UART log reached `FMUv6X protected bring-up`,
+`ver all`, and `work_queue status` without either previous HardFault.
+Windows then enumerated the board USB as COM3, and pressing Enter three times
+displayed `nsh>`. The debug adapter remained on COM4; COM numbers are
+host-specific. This confirms initial startup and USB shell entry for that
+image. The initial command results below extend this evidence; repeated
+startup and sustained runtime stability remain unverified.
+
+`Work Queue: 0 threads` reports an active userspace PX4 work-queue manager
+with no worker queues created yet. The minimal configuration has not started
+the flight modules that would request those queues. This count does not
+include the manager task itself or kernel work queues. The fault-log lines
+`state:1` and `Fault Log is Armed` describe an empty/rearmed crash slot, not
+a new HardFault.
+
+The user subsequently ran `help`, `free`, `ps`, `uorb status`, and
+`listener log_message -n 1` successfully at the USB prompt. The heap snapshot
+reported the following byte counts:
+
+| Heap | Total | Used | Free | Largest free block |
+| --- | ---: | ---: | ---: | ---: |
+| Kernel | 245,408 | 36,560 | 208,848 | 207,920 |
+| User | 130,720 | 20,096 | 110,624 | 110,112 |
+
+`ps` showed separate kernel and user `wq:manager` tasks, a kernel
+`wq:lp_default`, and the user `usr_hrt` dispatcher waiting on a semaphore.
+`px4_entry` used 1,548 of 3,144 stack bytes (49.2%). These are live-state and
+stack-usage observations, not proof of leak-free operation or callback timing.
+
+`uorb status` reported `log_message` instance 0, queue length 4 and message
+size 136. The user-space listener read the kernel's startup message
+`initialized uORB logging`, severity 6 (info), timestamp 4,051 microseconds.
+Its displayed age of approximately 755 seconds is consistent with reading a
+message published once at startup. This confirms initial kernel publication
+and a user subscription/read/unsubscribe, as well as a plausible time read
+through the user HRT interface. The single-message listener path does not
+exercise `poll()` notifications or periodic publication.
+
+The `free` command's `Prog` row counts programmed/erased flash chunks rather
+than runtime heap space. The pinned NuttX procfs implementation also counts
+its terminal error result as one extra 32-byte page, explaining the displayed
+2,097,184-byte total. Treat this as a reporting issue and use Kmem/Umem for
+RAM observations; it does not indicate heap corruption.
+
+Repeated cold starts, USB reconnects, heap trends, user work execution,
+HRT callbacks/cancellation, uORB notifications, and MPU isolation enforcement
+remain to be verified. The static artifact checker does not infer hardware
+validation from source revision; its generated hardware flags remain false
+for locally built images.
 
 Firmware generation alone does not establish working board startup, heap
 isolation, cross-boundary callbacks, or real-time performance. These require
@@ -199,5 +264,6 @@ requires Python 3 and `arm-none-eabi-nm` from the ARM toolchain, and writes
 python3 boards/px4/fmu-v6x/tools/verify_protected.py build/px4_fmu-v6x_protected
 ```
 
-USB enumeration, interactive commands and reconnect behavior have not yet
-been tested on a board.
+Initial USB enumeration, shell entry and the listed diagnostic commands have
+been confirmed as described above. Reconnect behavior and sustained runtime
+validation remain pending.

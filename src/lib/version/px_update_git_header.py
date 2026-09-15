@@ -40,7 +40,8 @@ header = """
 if args.git_tag:
     git_tag = args.git_tag
 else:
-    git_describe_cmd = 'git describe --exclude ext/* --always --tags --dirty'
+    # v0.* tags track this research project independently of the PX4 version.
+    git_describe_cmd = 'git describe --exclude ext/* --exclude v0.* --always --tags --dirty'
     git_tag = subprocess.check_output(git_describe_cmd.split(),
                                   stderr=subprocess.STDOUT).decode('utf-8').strip()
 

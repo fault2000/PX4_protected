@@ -113,7 +113,8 @@ include(px4_parse_function_args)
 include(px4_git)
 
 execute_process(
-	COMMAND git describe --exclude ext/* --tags --match "v[0-9]*"
+	# v0.* tags track this research project independently of the PX4 version.
+	COMMAND git describe --exclude ext/* --exclude "v0.*" --tags --match "v[0-9]*"
 	OUTPUT_VARIABLE PX4_GIT_TAG
 	OUTPUT_STRIP_TRAILING_WHITESPACE
 	RESULTS_VARIABLE GIT_DESCRIBE_RESULT
